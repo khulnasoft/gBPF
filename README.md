@@ -63,4 +63,8 @@ The toolchain image build files are kept in [testdata/docker/](testdata/docker/)
 
 ## License
 
-MIT
+[MIT](LICENSE)
+
+---
+
+KhulnaSoft ❤️ Open Source
