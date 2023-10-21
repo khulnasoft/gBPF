@@ -9,8 +9,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/khulnasoft/gebpf/internal"
-	"github.com/khulnasoft/gebpf/internal/testutils"
+	"github.com/khulnasoft/gbpf/internal"
+	"github.com/khulnasoft/gbpf/internal/testutils"
 	qt "github.com/frankban/quicktest"
 )
 
