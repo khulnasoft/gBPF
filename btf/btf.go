@@ -12,8 +12,8 @@ import (
 	"reflect"
 	"sync"
 
-	"github.com/khulnasoft/gebpf/internal"
-	"github.com/khulnasoft/gebpf/internal/sys"
+	"github.com/khulnasoft/gbpf/internal"
+	"github.com/khulnasoft/gbpf/internal/sys"
 )
 
 const btfMagic = 0xeB9F
