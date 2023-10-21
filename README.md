@@ -1,12 +1,6 @@
-# eBPF
+# gBPF
 
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/khulnasoft/gbpf)](https://pkg.go.dev/github.com/khulnasoft/gbpf)
-
-![HoneyGopher](docs/ebpf/ebpf-go.png)
-
-ebpf-go is a pure Go library that provides utilities for loading, compiling, and
-debugging eBPF programs. It has minimal external dependencies and is intended to
-be used in long running processes.
 
 See [ebpf.io](https://ebpf.io) for complementary projects from the wider eBPF
 ecosystem.
@@ -25,12 +19,6 @@ The community actively monitors our [GitHub Discussions](https://github.com/khul
 Please search for existing threads before starting a new one. Refrain from
 opening issues on the bug tracker if you're just starting out or if you're not
 sure if something is a bug in the library code.
-
-Alternatively, [join](https://ebpf.io/slack) the
-[#ebpf-go](https://khulnasoft.slack.com/messages/ebpf-go) channel on Slack if you
-have other questions regarding the project. Note that this channel is ephemeral
-and has its history erased past a certain point, which is less helpful for
-others running into the same problem later.
 
 ## Packages
 
@@ -76,7 +64,3 @@ The toolchain image build files are kept in [testdata/docker/](testdata/docker/)
 ## License
 
 MIT
-
-### eBPF Gopher
-
-The eBPF honeygopher is based on the Go gopher designed by Renee French.
