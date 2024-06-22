@@ -6,7 +6,7 @@ import (
 	"math"
 	"testing"
 
-	gbpf "github.com/khulnasoft/gbpf"
+	"github.com/khulnasoft/gbpf"
 	"github.com/khulnasoft/gbpf/asm"
 	"github.com/khulnasoft/gbpf/internal"
 	"github.com/khulnasoft/gbpf/internal/testutils"
