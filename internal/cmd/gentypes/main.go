@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 
@@ -120,6 +121,8 @@ import (
 		{"HdrStartOff", "bpf_hdr_start_off"},
 		{"RetCode", "bpf_ret_code"},
 		{"XdpAction", "xdp_action"},
+		{"TcxActionBase", "tcx_action_base"},
+		{"PerfEventType", "bpf_perf_event_type"},
 	}
 
 	sort.Slice(enums, func(i, j int) bool {
@@ -319,11 +322,21 @@ import (
 		},
 		{
 			"ProgAttach", retError, "prog_attach", "BPF_PROG_ATTACH",
-			nil,
+			[]patch{
+				flattenAnon,
+				rename("target_fd", "target_fd_or_ifindex"),
+				rename("relative_fd", "relative_fd_or_id"),
+			},
 		},
 		{
 			"ProgDetach", retError, "prog_attach", "BPF_PROG_DETACH",
-			[]patch{truncateAfter("attach_type")},
+			[]patch{
+				flattenAnon,
+				rename("target_fd", "target_fd_or_ifindex"),
+				truncateAfter("expected_revision"),
+				rename("relative_fd", "relative_fd_or_id"),
+				remove("replace_bpf_fd"),
+			},
 		},
 		{
 			"ProgRun", retError, "prog_run", "BPF_PROG_TEST_RUN",
@@ -351,6 +364,14 @@ import (
 				truncateAfter("next_id"),
 			},
 		},
+		{
+			"LinkGetNextId", retError, "obj_next_id", "BPF_LINK_GET_NEXT_ID",
+			[]patch{
+				choose(0, "start_id"), rename("start_id", "id"),
+				replace(linkID, "id", "next_id"),
+				truncateAfter("next_id"),
+			},
+		},
 		// These piggy back on the obj_next_id decl, but only support the
 		// first field...
 		{
@@ -364,6 +385,10 @@ import (
 		{
 			"ProgGetFdById", retFd, "obj_next_id", "BPF_PROG_GET_FD_BY_ID",
 			[]patch{choose(0, "start_id"), rename("start_id", "id"), truncateAfter("id")},
+		},
+		{
+			"LinkGetFdById", retFd, "obj_next_id", "BPF_LINK_GET_FD_BY_ID",
+			[]patch{choose(0, "start_id"), rename("start_id", "id"), replace(linkID, "id"), truncateAfter("id")},
 		},
 		{
 			"ObjGetInfoByFd", retError, "info_by_fd", "BPF_OBJ_GET_INFO_BY_FD",
@@ -418,12 +443,61 @@ import (
 			},
 		},
 		{
+			"LinkCreateNetfilter", retFd, "link_create", "BPF_LINK_CREATE",
+			[]patch{
+				chooseNth(4, 5),
+				replace(enumTypes["AttachType"], "attach_type"),
+				modify(func(m *btf.Member) error {
+					return rename("flags", "netfilter_flags")(m.Type.(*btf.Struct))
+				}, "netfilter"),
+				flattenAnon,
+			},
+		},
+		{
 			"LinkCreateTracing", retFd, "link_create", "BPF_LINK_CREATE",
 			[]patch{
 				chooseNth(4, 4),
 				replace(enumTypes["AttachType"], "attach_type"),
 				flattenAnon,
 				replace(btfID, "target_btf_id"),
+			},
+		},
+		{
+			"LinkCreateTcx", retFd, "link_create", "BPF_LINK_CREATE",
+			[]patch{
+				choose(1, "target_ifindex"),
+				choose(4, "tcx"),
+				replace(enumTypes["AttachType"], "attach_type"),
+				flattenAnon,
+				flattenAnon, // flatten tcx member
+				rename("relative_fd", "relative_fd_or_id"),
+			},
+		},
+		{
+			"LinkCreateUprobeMulti", retFd, "link_create", "BPF_LINK_CREATE",
+			[]patch{
+				chooseNth(4, 7),
+				replace(enumTypes["AttachType"], "attach_type"),
+				modify(func(m *btf.Member) error {
+					return rename("flags", "uprobe_multi_flags")(m.Type.(*btf.Struct))
+				}, "uprobe_multi"),
+				flattenAnon,
+				replace(pointer, "path"),
+				replace(pointer, "offsets"),
+				replace(pointer, "ref_ctr_offsets"),
+				replace(pointer, "cookies"),
+				rename("cnt", "count"),
+			},
+		},
+		{
+			"LinkCreateNetkit", retFd, "link_create", "BPF_LINK_CREATE",
+			[]patch{
+				choose(1, "target_ifindex"),
+				choose(4, "netkit"),
+				replace(enumTypes["AttachType"], "attach_type"),
+				flattenAnon,
+				flattenAnon,
+				rename("relative_fd", "relative_fd_or_id"),
 			},
 		},
 		{
@@ -442,8 +516,11 @@ import (
 			"ProgQuery", retError, "prog_query", "BPF_PROG_QUERY",
 			[]patch{
 				replace(enumTypes["AttachType"], "attach_type"),
-				replace(pointer, "prog_ids"),
-				rename("prog_cnt", "prog_count"),
+				replace(pointer, "prog_ids", "prog_attach_flags"),
+				replace(pointer, "link_ids", "link_attach_flags"),
+				flattenAnon,
+				rename("prog_cnt", "count"),
+				rename("target_fd", "target_fd_or_ifindex"),
 			},
 		},
 	}
@@ -462,7 +539,7 @@ import (
 		{"map_elem_batch", "batch"},
 		{"prog_load", "prog_type"},
 		{"obj_pin", "pathname"},
-		{"prog_attach", "target_fd"},
+		{"prog_attach", ""},
 		{"prog_run", "test"},
 		{"obj_next_id", ""},
 		{"info_by_fd", "info"},
@@ -478,7 +555,7 @@ import (
 		{"prog_bind_map", "prog_bind_map"},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("splitting bpf_attr: %w", err)
+		return nil, fmt.Errorf("split bpf_attr: %w", err)
 	}
 
 	for _, s := range attrs {
@@ -503,21 +580,97 @@ import (
 	}
 
 	// Link info type specific
-
 	linkInfoExtraTypes := []struct {
 		goType  string
-		cType   string
 		patches []patch
 	}{
-		{"CgroupLinkInfo", "cgroup", []patch{replace(enumTypes["AttachType"], "attach_type")}},
-		{"IterLinkInfo", "iter", []patch{replace(pointer, "target_name"), truncateAfter("target_name_len")}},
-		{"NetNsLinkInfo", "netns", []patch{replace(enumTypes["AttachType"], "attach_type")}},
-		{"RawTracepointLinkInfo", "raw_tracepoint", []patch{replace(pointer, "tp_name")}},
-		{"TracingLinkInfo", "tracing", []patch{
-			replace(enumTypes["AttachType"], "attach_type"),
-			replace(typeID, "target_btf_id")},
+		{"CgroupLinkInfo",
+			[]patch{
+				choose(3, "cgroup"),
+				flattenAnon,
+				replace(enumTypes["AttachType"], "attach_type"),
+			},
 		},
-		{"XDPLinkInfo", "xdp", nil},
+		{"IterLinkInfo",
+			[]patch{
+				choose(3, "iter"),
+				flattenAnon,
+				replace(pointer, "target_name"),
+				truncateAfter("target_name_len"),
+			},
+		},
+		{"NetNsLinkInfo",
+			[]patch{choose(3, "netns"),
+				flattenAnon,
+				replace(enumTypes["AttachType"], "attach_type"),
+			},
+		},
+		{"RawTracepointLinkInfo",
+			[]patch{choose(3, "raw_tracepoint"),
+				flattenAnon,
+				replace(pointer, "tp_name"),
+			},
+		},
+		{"TracingLinkInfo",
+			[]patch{
+				choose(3, "tracing"),
+				flattenAnon,
+				replace(enumTypes["AttachType"], "attach_type"),
+				replace(typeID, "target_btf_id"),
+			},
+		},
+		{"XDPLinkInfo",
+			[]patch{choose(3, "xdp"),
+				flattenAnon,
+			},
+		},
+		{"TcxLinkInfo",
+			[]patch{
+				choose(3, "tcx"),
+				flattenAnon,
+				replace(enumTypes["AttachType"], "attach_type"),
+			},
+		},
+		{"NetfilterLinkInfo",
+			[]patch{
+				choose(3, "netfilter"),
+				flattenAnon,
+			},
+		},
+		{"NetkitLinkInfo",
+			[]patch{
+				choose(3, "netkit"),
+				flattenAnon,
+				replace(enumTypes["AttachType"], "attach_type"),
+			},
+		},
+		{"KprobeMultiLinkInfo",
+			[]patch{
+				choose(3, "kprobe_multi"),
+				flattenAnon,
+				replace(pointer, "addrs"),
+			},
+		},
+		{"PerfEventLinkInfo",
+			[]patch{
+				choose(3, "perf_event"),
+				flattenAnon,
+				renameNth(3, "perf_event_type"),
+				replace(enumTypes["PerfEventType"], "perf_event_type"),
+				truncateAfter("perf_event_type"),
+			},
+		},
+		{"KprobeLinkInfo",
+			[]patch{
+				choose(3, "perf_event"),
+				flattenAnon,
+				renameNth(3, "perf_event_type"),
+				replace(enumTypes["PerfEventType"], "perf_event_type"),
+				choose(4, "kprobe"),
+				flattenAnon,
+				replace(pointer, "func_name"),
+			},
+		},
 	}
 
 	sort.Slice(linkInfoExtraTypes, func(i, j int) bool {
@@ -529,27 +682,13 @@ import (
 		return nil, err
 	}
 
-	member := bpfLinkInfo.Members[len(bpfLinkInfo.Members)-1]
-	bpfLinkInfoUnion, ok := member.Type.(*btf.Union)
-	if !ok {
-		return nil, fmt.Errorf("there is not type-specific union")
-	}
-
-	linkInfoTypes, err := splitUnion(bpfLinkInfoUnion, types{
-		{"raw_tracepoint", "raw_tracepoint"},
-		{"tracing", "tracing"},
-		{"cgroup", "cgroup"},
-		{"iter", "iter"},
-		{"netns", "netns"},
-		{"xdp", "xdp"},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("splitting linkInfo: %w", err)
+	patches := []patch{
+		replace(enumTypes["LinkType"], "type"),
+		replace(linkID, "id"),
 	}
 
 	for _, s := range linkInfoExtraTypes {
-		t := linkInfoTypes[s.cType]
-		if err := outputPatchedStruct(gf, w, s.goType, t, s.patches); err != nil {
+		if err := outputPatchedStruct(gf, w, s.goType, bpfLinkInfo, append(patches, s.patches...)); err != nil {
 			return nil, fmt.Errorf("output %q: %w", s.goType, err)
 		}
 	}
@@ -572,7 +711,7 @@ func (fpe *failedPatchError) Error() string {
 }
 
 func outputPatchedStruct(gf *btf.GoFormatter, w *bytes.Buffer, id string, s *btf.Struct, patches []patch) error {
-	s = btf.Copy(s, nil).(*btf.Struct)
+	s = btf.Copy(s).(*btf.Struct)
 
 	for i, p := range patches {
 		if err := p(s); err != nil {
@@ -715,21 +854,27 @@ func flattenAnon(s *btf.Struct) error {
 	for i := range s.Members {
 		m := &s.Members[i]
 
-		cs, ok := m.Type.(*btf.Struct)
-		if !ok || cs.TypeName() != "" {
+		if m.Type.TypeName() != "" {
 			continue
 		}
 
-		for j := range cs.Members {
-			cs.Members[j].Offset += m.Offset
+		var newMembers []btf.Member
+		switch cs := m.Type.(type) {
+		case *btf.Struct:
+			for j := range cs.Members {
+				cs.Members[j].Offset += m.Offset
+			}
+			newMembers = cs.Members
+
+		case *btf.Union:
+			cs.Members[0].Offset += m.Offset
+			newMembers = []btf.Member{cs.Members[0]}
+
+		default:
+			continue
 		}
 
-		newMembers := make([]btf.Member, 0, len(s.Members)+len(cs.Members)-1)
-		newMembers = append(newMembers, s.Members[:i]...)
-		newMembers = append(newMembers, cs.Members...)
-		newMembers = append(newMembers, s.Members[i+1:]...)
-
-		s.Members = newMembers
+		s.Members = slices.Replace(s.Members, i, i+1, newMembers...)
 	}
 
 	return nil
@@ -768,6 +913,16 @@ func rename(from, to string) patch {
 	}
 }
 
+func renameNth(idx int, to string) patch {
+	return func(s *btf.Struct) error {
+		if idx >= len(s.Members) {
+			return fmt.Errorf("index %d is out of bounds", idx)
+		}
+		s.Members[idx].Name = to
+		return nil
+	}
+}
+
 func name(member int, name string) patch {
 	return modifyNth(func(m *btf.Member) error {
 		if m.Name != "" {
@@ -797,4 +952,16 @@ func replaceWithBytes(members ...string) patch {
 
 		return nil
 	}, members...)
+}
+
+func remove(member string) patch {
+	return func(s *btf.Struct) error {
+		for i, m := range s.Members {
+			if m.Name == member {
+				s.Members = slices.Delete(s.Members, i, i+1)
+				return nil
+			}
+		}
+		return fmt.Errorf("member %q not found", member)
+	}
 }

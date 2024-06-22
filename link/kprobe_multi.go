@@ -16,7 +16,7 @@ import (
 // KprobeMultiOptions defines additional parameters that will be used
 // when opening a KprobeMulti Link.
 type KprobeMultiOptions struct {
-	// Symbols takes a list of kernel symbol names to attach an ebpf program to.
+	// Symbols takes a list of kernel symbol names to attach an gbpf program to.
 	//
 	// Mutually exclusive with Addresses.
 	Symbols []string
@@ -30,7 +30,7 @@ type KprobeMultiOptions struct {
 	// Mutually exclusive with Symbols.
 	Addresses []uintptr
 
-	// Cookies specifies arbitrary values that can be fetched from an eBPF
+	// Cookies specifies arbitrary values that can be fetched from an gBPF
 	// program via `bpf_get_attach_cookie()`.
 	//
 	// If set, its length should be equal to the length of Symbols or Addresses.
@@ -39,7 +39,7 @@ type KprobeMultiOptions struct {
 	Cookies []uint64
 }
 
-// KprobeMulti attaches the given eBPF program to the entry point of a given set
+// KprobeMulti attaches the given gBPF program to the entry point of a given set
 // of kernel symbols.
 //
 // The difference with Kprobe() is that multi-kprobe accomplishes this in a
@@ -47,11 +47,11 @@ type KprobeMultiOptions struct {
 // probes one at a time.
 //
 // Requires at least Linux 5.18.
-func KprobeMulti(prog *ebpf.Program, opts KprobeMultiOptions) (Link, error) {
+func KprobeMulti(prog *gbpf.Program, opts KprobeMultiOptions) (Link, error) {
 	return kprobeMulti(prog, opts, 0)
 }
 
-// KretprobeMulti attaches the given eBPF program to the return point of a given
+// KretprobeMulti attaches the given gBPF program to the return point of a given
 // set of kernel symbols.
 //
 // The difference with Kretprobe() is that multi-kprobe accomplishes this in a
@@ -59,11 +59,11 @@ func KprobeMulti(prog *ebpf.Program, opts KprobeMultiOptions) (Link, error) {
 // probes one at a time.
 //
 // Requires at least Linux 5.18.
-func KretprobeMulti(prog *ebpf.Program, opts KprobeMultiOptions) (Link, error) {
+func KretprobeMulti(prog *gbpf.Program, opts KprobeMultiOptions) (Link, error) {
 	return kprobeMulti(prog, opts, unix.BPF_F_KPROBE_MULTI_RETURN)
 }
 
-func kprobeMulti(prog *ebpf.Program, opts KprobeMultiOptions, flags uint32) (Link, error) {
+func kprobeMulti(prog *gbpf.Program, opts KprobeMultiOptions, flags uint32) (Link, error) {
 	if prog == nil {
 		return nil, errors.New("cannot attach a nil program")
 	}
@@ -111,7 +111,7 @@ func kprobeMulti(prog *ebpf.Program, opts KprobeMultiOptions, flags uint32) (Lin
 	}
 
 	if err != nil {
-		if haveFeatErr := haveBPFLinkKprobeMulti(); haveFeatErr != nil {
+		if haveFeatErr := havgBPFLinkKprobeMulti(); haveFeatErr != nil {
 			return nil, haveFeatErr
 		}
 		return nil, err
@@ -126,7 +126,7 @@ type kprobeMultiLink struct {
 
 var _ Link = (*kprobeMultiLink)(nil)
 
-func (kml *kprobeMultiLink) Update(prog *ebpf.Program) error {
+func (kml *kprobeMultiLink) Update(prog *gbpf.Program) error {
 	return fmt.Errorf("update kprobe_multi: %w", ErrNotSupported)
 }
 
@@ -138,15 +138,34 @@ func (kml *kprobeMultiLink) Unpin() error {
 	return fmt.Errorf("unpin kprobe_multi: %w", ErrNotSupported)
 }
 
-var haveBPFLinkKprobeMulti = internal.NewFeatureTest("bpf_link_kprobe_multi", "5.18", func() error {
-	prog, err := ebpf.NewProgram(&ebpf.ProgramSpec{
+func (kml *kprobeMultiLink) Info() (*Info, error) {
+	var info sys.KprobeMultiLinkInfo
+	if err := sys.ObjInfo(kml.fd, &info); err != nil {
+		return nil, fmt.Errorf("kprobe multi link info: %s", err)
+	}
+	extra := &KprobeMultiInfo{
+		count:  info.Count,
+		flags:  info.Flags,
+		missed: info.Missed,
+	}
+
+	return &Info{
+		info.Type,
+		info.Id,
+		gbpf.ProgramID(info.ProgId),
+		extra,
+	}, nil
+}
+
+var havgBPFLinkKprobeMulti = internal.NewFeatureTest("bpf_link_kprobe_multi", "5.18", func() error {
+	prog, err := gbpf.NewProgram(&gbpf.ProgramSpec{
 		Name: "probe_kpm_link",
-		Type: ebpf.Kprobe,
+		Type: gbpf.Kprobe,
 		Instructions: asm.Instructions{
 			asm.Mov.Imm(asm.R0, 0),
 			asm.Return(),
 		},
-		AttachType: ebpf.AttachTraceKprobeMulti,
+		AttachType: gbpf.AttachTraceKprobeMulti,
 		License:    "MIT",
 	})
 	if errors.Is(err, unix.E2BIG) {

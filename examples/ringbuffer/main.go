@@ -15,7 +15,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-//go:generate go run github.com/khulnasoft/gbpf/cmd/gbpf -type event bpf ringbuffer.c -- -I../headers
+//go:generate go run github.com/khulnasoft/gbpf/cmd/bpf2go -type event bpf ringbuffer.c -- -I../headers
 
 func main() {
 	// Name of the kernel function to trace.
@@ -25,7 +25,7 @@ func main() {
 	stopper := make(chan os.Signal, 1)
 	signal.Notify(stopper, os.Interrupt, syscall.SIGTERM)
 
-	// Allow the current process to lock memory for eBPF resources.
+	// Allow the current process to lock memory for gBPF resources.
 	if err := rlimit.RemoveMemlock(); err != nil {
 		log.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func main() {
 	defer kp.Close()
 
 	// Open a ringbuf reader from userspace RINGBUF map described in the
-	// eBPF C program.
+	// gBPF C program.
 	rd, err := ringbuf.NewReader(objs.Events)
 	if err != nil {
 		log.Fatalf("opening ringbuf reader: %s", err)

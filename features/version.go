@@ -8,7 +8,7 @@ import "github.com/khulnasoft/gbpf/internal"
 //
 // Do not use the version to make assumptions about the presence of certain
 // kernel features, always prefer feature probes in this package. Some
-// distributions backport or disable eBPF features.
+// distributions backport or disable gBPF features.
 func LinuxVersionCode() (uint32, error) {
 	v, err := internal.KernelVersion()
 	if err != nil {

@@ -8,7 +8,7 @@ import (
 	"path"
 	"testing"
 
-	qt "github.com/frankban/quicktest"
+	"github.com/go-quicktest/qt"
 
 	"github.com/khulnasoft/gbpf"
 	"github.com/khulnasoft/gbpf/internal/testutils"
@@ -18,7 +18,8 @@ import (
 
 var (
 	bashEx, _ = OpenExecutable("/bin/bash")
-	bashSym   = "main"
+	bashSyms  = []string{"main", "_start", "check_dev_tty"}
+	bashSym   = bashSyms[0]
 )
 
 func TestExecutable(t *testing.T) {
@@ -31,82 +32,82 @@ func TestExecutable(t *testing.T) {
 		t.Fatalf("create executable: unexpected path '%s'", bashEx.path)
 	}
 
-	_, err = bashEx.address(bashSym, &UprobeOptions{})
+	_, err = bashEx.address(bashSym, 0, 0)
 	if err != nil {
 		t.Fatalf("find offset: %v", err)
 	}
 
-	_, err = bashEx.address("bogus", &UprobeOptions{})
+	_, err = bashEx.address("bogus", 0, 0)
 	if err == nil {
 		t.Fatal("find symbol: expected error")
 	}
 }
 
 func TestExecutableOffset(t *testing.T) {
-	c := qt.New(t)
-
-	symbolOffset, err := bashEx.address(bashSym, &UprobeOptions{})
+	symbolOffset, err := bashEx.address(bashSym, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	offset, err := bashEx.address(bashSym, &UprobeOptions{Address: 0x1})
+	offset, err := bashEx.address(bashSym, 0x1, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.Assert(offset, qt.Equals, uint64(0x1))
+	qt.Assert(t, qt.Equals(offset, 0x1))
 
-	offset, err = bashEx.address(bashSym, &UprobeOptions{Offset: 0x2})
+	offset, err = bashEx.address(bashSym, 0, 0x2)
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.Assert(offset, qt.Equals, symbolOffset+0x2)
+	qt.Assert(t, qt.Equals(offset, symbolOffset+0x2))
 
-	offset, err = bashEx.address(bashSym, &UprobeOptions{Address: 0x1, Offset: 0x2})
+	offset, err = bashEx.address(bashSym, 0x1, 0x2)
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.Assert(offset, qt.Equals, uint64(0x1+0x2))
+	qt.Assert(t, qt.Equals(offset, 0x1+0x2))
 }
 
 func TestExecutableLazyLoadSymbols(t *testing.T) {
-	c := qt.New(t)
+	testutils.SkipOnOldKernel(t, "4.14", "uprobe on v4.9 returns EIO on vimto")
 
 	ex, err := OpenExecutable("/bin/bash")
-	c.Assert(err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 	// Addresses must be empty, will be lazy loaded.
-	c.Assert(ex.addresses, qt.DeepEquals, map[string]uint64{})
+	qt.Assert(t, qt.HasLen(ex.cachedAddresses, 0))
 
-	prog := mustLoadProgram(t, ebpf.Kprobe, 0, "")
-	up, err := ex.Uprobe(bashSym, prog, &UprobeOptions{Address: 123})
-	c.Assert(err, qt.IsNil)
+	prog := mustLoadProgram(t, gbpf.Kprobe, 0, "")
+	// Address must be a multiple of 4 on arm64, see
+	// https://elixir.bootlin.com/linux/v6.6.4/source/arch/arm64/kernel/probes/uprobes.c#L42
+	up, err := ex.Uprobe(bashSym, prog, &UprobeOptions{Address: 124})
+	qt.Assert(t, qt.IsNil(err))
 	up.Close()
 
 	// Addresses must still be empty as Address has been provided via options.
-	c.Assert(ex.addresses, qt.DeepEquals, map[string]uint64{})
+	qt.Assert(t, qt.HasLen(ex.cachedAddresses, 0))
 
 	up, err = ex.Uprobe(bashSym, prog, nil)
-	c.Assert(err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 	up.Close()
 
 	// Symbol table should be loaded.
-	c.Assert(len(ex.addresses), qt.Not(qt.Equals), 0)
+	qt.Assert(t, qt.Not(qt.HasLen(ex.cachedAddresses, 0)))
 }
 
 func TestUprobe(t *testing.T) {
-	c := qt.New(t)
+	testutils.SkipOnOldKernel(t, "4.14", "uprobe on v4.9 returns EIO on vimto")
 
-	prog := mustLoadProgram(t, ebpf.Kprobe, 0, "")
+	prog := mustLoadProgram(t, gbpf.Kprobe, 0, "")
 
 	up, err := bashEx.Uprobe(bashSym, prog, nil)
-	c.Assert(err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 	defer up.Close()
 
 	testLink(t, up, prog)
 }
 
 func TestUprobeExtNotFound(t *testing.T) {
-	prog := mustLoadProgram(t, ebpf.Kprobe, 0, "")
+	prog := mustLoadProgram(t, gbpf.Kprobe, 0, "")
 
 	// This symbol will not be present in Executable (elf.SHN_UNDEF).
 	_, err := bashEx.Uprobe("open", prog, nil)
@@ -116,14 +117,15 @@ func TestUprobeExtNotFound(t *testing.T) {
 }
 
 func TestUprobeExtWithOpts(t *testing.T) {
-	prog := mustLoadProgram(t, ebpf.Kprobe, 0, "")
+	testutils.SkipOnOldKernel(t, "4.14", "uprobe on v4.9 returns EIO on vimto")
+
+	prog := mustLoadProgram(t, gbpf.Kprobe, 0, "")
 
 	// NB: It's not possible to invoke the uprobe since we use an arbitrary
 	// address.
 	up, err := bashEx.Uprobe("open", prog, &UprobeOptions{
-		// arm64 doesn't seem to allow addresses on the first page. Use
-		// the first byte of the second page.
-		Address: uint64(os.Getpagesize()),
+		// arm64 requires the addresses to be aligned (a multiple of 4)
+		Address: 0x4,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -132,7 +134,9 @@ func TestUprobeExtWithOpts(t *testing.T) {
 }
 
 func TestUprobeWithPID(t *testing.T) {
-	prog := mustLoadProgram(t, ebpf.Kprobe, 0, "")
+	testutils.SkipOnOldKernel(t, "4.14", "uprobe on v4.9 returns EIO on vimto")
+
+	prog := mustLoadProgram(t, gbpf.Kprobe, 0, "")
 
 	up, err := bashEx.Uprobe(bashSym, prog, &UprobeOptions{PID: os.Getpid()})
 	if err != nil {
@@ -142,7 +146,7 @@ func TestUprobeWithPID(t *testing.T) {
 }
 
 func TestUprobeWithNonExistentPID(t *testing.T) {
-	prog := mustLoadProgram(t, ebpf.Kprobe, 0, "")
+	prog := mustLoadProgram(t, gbpf.Kprobe, 0, "")
 
 	// trying to open a perf event on a non-existent PID will return ESRCH.
 	_, err := bashEx.Uprobe(bashSym, prog, &UprobeOptions{PID: -2})
@@ -152,12 +156,12 @@ func TestUprobeWithNonExistentPID(t *testing.T) {
 }
 
 func TestUretprobe(t *testing.T) {
-	c := qt.New(t)
+	testutils.SkipOnOldKernel(t, "4.14", "uprobe on v4.9 returns EIO on vimto")
 
-	prog := mustLoadProgram(t, ebpf.Kprobe, 0, "")
+	prog := mustLoadProgram(t, gbpf.Kprobe, 0, "")
 
 	up, err := bashEx.Uretprobe(bashSym, prog, nil)
-	c.Assert(err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 	defer up.Close()
 
 	testLink(t, up, prog)
@@ -168,11 +172,9 @@ func TestUprobeCreatePMU(t *testing.T) {
 	// Requires at least 4.17 (e12f03d7031a "perf/core: Implement the 'perf_kprobe' PMU")
 	testutils.SkipOnOldKernel(t, "4.17", "perf_kprobe PMU")
 
-	c := qt.New(t)
-
 	// Fetch the offset from the /bin/bash Executable already defined.
-	off, err := bashEx.address(bashSym, &UprobeOptions{})
-	c.Assert(err, qt.IsNil)
+	off, err := bashEx.address(bashSym, 0, 0)
+	qt.Assert(t, qt.IsNil(err))
 
 	// Prepare probe args.
 	args := tracefs.ProbeArgs{
@@ -185,23 +187,21 @@ func TestUprobeCreatePMU(t *testing.T) {
 
 	// uprobe PMU
 	pu, err := pmuProbe(args)
-	c.Assert(err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 	defer pu.Close()
 
 	// uretprobe PMU
 	args.Ret = true
 	pr, err := pmuProbe(args)
-	c.Assert(err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 	defer pr.Close()
 }
 
 // Test fallback behaviour on kernels without perf_uprobe PMU available.
 func TestUprobePMUUnavailable(t *testing.T) {
-	c := qt.New(t)
-
 	// Fetch the offset from the /bin/bash Executable already defined.
-	off, err := bashEx.address(bashSym, &UprobeOptions{})
-	c.Assert(err, qt.IsNil)
+	off, err := bashEx.address(bashSym, 0, 0)
+	qt.Assert(t, qt.IsNil(err))
 
 	// Prepare probe args.
 	args := tracefs.ProbeArgs{
@@ -219,16 +219,16 @@ func TestUprobePMUUnavailable(t *testing.T) {
 	}
 
 	// Expect ErrNotSupported.
-	c.Assert(errors.Is(err, ErrNotSupported), qt.IsTrue, qt.Commentf("got error: %s", err))
+	qt.Assert(t, qt.ErrorIs(err, ErrNotSupported), qt.Commentf("got error: %s", err))
 }
 
 // Test tracefs u(ret)probe creation on all kernel versions.
 func TestUprobeTraceFS(t *testing.T) {
-	c := qt.New(t)
+	testutils.SkipOnOldKernel(t, "4.14", "uprobe on v4.9 returns EIO on vimto")
 
 	// Fetch the offset from the /bin/bash Executable already defined.
-	off, err := bashEx.address(bashSym, &UprobeOptions{})
-	c.Assert(err, qt.IsNil)
+	off, err := bashEx.address(bashSym, 0, 0)
+	qt.Assert(t, qt.IsNil(err))
 
 	// Prepare probe args.
 	args := tracefs.ProbeArgs{
@@ -241,42 +241,44 @@ func TestUprobeTraceFS(t *testing.T) {
 
 	// Open and close tracefs u(ret)probes, checking all errors.
 	up, err := tracefsProbe(args)
-	c.Assert(err, qt.IsNil)
-	c.Assert(up.Close(), qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
+	qt.Assert(t, qt.IsNil(up.Close()))
 
 	args.Ret = true
 	up, err = tracefsProbe(args)
-	c.Assert(err, qt.IsNil)
-	c.Assert(up.Close(), qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
+	qt.Assert(t, qt.IsNil(up.Close()))
 
 	// Create two identical trace events, ensure their IDs differ.
 	args.Ret = false
 	u1, err := tracefsProbe(args)
-	c.Assert(err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 	defer u1.Close()
-	c.Assert(u1.tracefsEvent, qt.IsNotNil)
+	qt.Assert(t, qt.IsNotNil(u1.tracefsEvent))
 
 	u2, err := tracefsProbe(args)
-	c.Assert(err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 	defer u2.Close()
-	c.Assert(u2.tracefsEvent, qt.IsNotNil)
+	qt.Assert(t, qt.IsNotNil(u2.tracefsEvent))
 
 	// Compare the uprobes' tracefs IDs.
-	c.Assert(u1.tracefsEvent.ID(), qt.Not(qt.Equals), u2.tracefsEvent.ID())
+	qt.Assert(t, qt.Not(qt.Equals(u1.tracefsEvent.ID(), u2.tracefsEvent.ID())))
 
 	// Expect an error when supplying an invalid custom group name
 	args.Group = "/"
 	_, err = tracefsProbe(args)
-	c.Assert(err, qt.Not(qt.IsNil))
+	qt.Assert(t, qt.Not(qt.IsNil(err)))
 
 	args.Group = "customgroup"
 	u3, err := tracefsProbe(args)
-	c.Assert(err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 	defer u3.Close()
-	c.Assert(u3.tracefsEvent.Group(), qt.Matches, `customgroup_[a-f0-9]{16}`)
+	qt.Assert(t, qt.Matches(u3.tracefsEvent.Group(), `customgroup_[a-f0-9]{16}`))
 }
 
 func TestUprobeProgramCall(t *testing.T) {
+	testutils.SkipOnOldKernel(t, "4.14", "uprobe on v4.9 returns EIO on vimto")
+
 	tests := []struct {
 		name string
 		elf  string
@@ -304,7 +306,7 @@ func TestUprobeProgramCall(t *testing.T) {
 				testutils.SkipOnOldKernel(t, "4.14", "uprobes on Go binaries silently fail on kernel < 4.14")
 			}
 
-			m, p := newUpdaterMapProg(t, ebpf.Kprobe, 0)
+			m, p := newUpdaterMapProg(t, gbpf.Kprobe, 0)
 
 			// Load the executable.
 			ex, err := OpenExecutable(tt.elf)
@@ -313,7 +315,7 @@ func TestUprobeProgramCall(t *testing.T) {
 			}
 
 			// Open Uprobe on the executable for the given symbol
-			// and attach it to the ebpf program created above.
+			// and attach it to the gbpf program created above.
 			u, err := ex.Uprobe(tt.sym, p, nil)
 			if errors.Is(err, ErrNoSymbol) {
 				// Assume bash::main and go::main.main always exists
@@ -325,7 +327,7 @@ func TestUprobeProgramCall(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			// Trigger ebpf program call.
+			// Trigger gbpf program call.
 			trigger := func(t *testing.T) {
 				if err := exec.Command(tt.elf, tt.args...).Run(); err != nil {
 					t.Fatal(err)
@@ -333,8 +335,9 @@ func TestUprobeProgramCall(t *testing.T) {
 			}
 			trigger(t)
 
-			// Assert that the value at index 0 has been updated to 1.
-			assertMapValue(t, m, 0, 1)
+			// Assert that the value got incremented to at least 1, while allowing
+			// for bigger values, because we could race with other bash execution.
+			assertMapValueGE(t, m, 0, 1)
 
 			// Detach the Uprobe.
 			if err := u.Close(); err != nil {
@@ -342,11 +345,11 @@ func TestUprobeProgramCall(t *testing.T) {
 			}
 
 			// Reset map value to 0 at index 0.
-			if err := m.Update(uint32(0), uint32(0), ebpf.UpdateExist); err != nil {
+			if err := m.Update(uint32(0), uint32(0), gbpf.UpdateExist); err != nil {
 				t.Fatal(err)
 			}
 
-			// Retrigger the ebpf program call.
+			// Retrigger the gbpf program call.
 			trigger(t)
 
 			// Assert that this time the value has not been updated.
@@ -356,7 +359,9 @@ func TestUprobeProgramCall(t *testing.T) {
 }
 
 func TestUprobeProgramWrongPID(t *testing.T) {
-	m, p := newUpdaterMapProg(t, ebpf.Kprobe, 0)
+	testutils.SkipOnOldKernel(t, "4.14", "uprobe on v4.9 returns EIO on vimto")
+
+	m, p := newUpdaterMapProg(t, gbpf.Kprobe, 0)
 
 	// Load the '/bin/bash' executable.
 	ex, err := OpenExecutable("/bin/bash")
@@ -365,7 +370,7 @@ func TestUprobeProgramWrongPID(t *testing.T) {
 	}
 
 	// Open Uprobe on '/bin/bash' for the symbol 'main'
-	// and attach it to the ebpf program created above.
+	// and attach it to the gbpf program created above.
 	// Create the perf-event with the current process' PID
 	// to make sure the event is not fired when we will try
 	// to trigger the program execution via exec.
@@ -375,7 +380,7 @@ func TestUprobeProgramWrongPID(t *testing.T) {
 	}
 	defer u.Close()
 
-	// Trigger ebpf program call.
+	// Trigger gbpf program call.
 	if err := exec.Command("/bin/bash", "--help").Run(); err != nil {
 		t.Fatal(err)
 	}

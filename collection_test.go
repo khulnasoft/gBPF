@@ -1,17 +1,20 @@
-package ebpf
+package gbpf
 
 import (
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"reflect"
 	"testing"
+
+	"github.com/go-quicktest/qt"
 
 	"github.com/khulnasoft/gbpf/asm"
 	"github.com/khulnasoft/gbpf/btf"
 	"github.com/khulnasoft/gbpf/internal"
 	"github.com/khulnasoft/gbpf/internal/testutils"
 	"github.com/khulnasoft/gbpf/internal/testutils/fdtrace"
-	qt "github.com/frankban/quicktest"
 )
 
 func TestMain(m *testing.M) {
@@ -95,7 +98,7 @@ func TestCollectionSpecCopy(t *testing.T) {
 }
 
 func TestCollectionSpecLoadCopy(t *testing.T) {
-	file := fmt.Sprintf("testdata/loader-%s.elf", internal.ClangEndian)
+	file := testutils.NativeFile(t, "testdata/loader-%s.elf")
 	spec, err := LoadCollectionSpec(file)
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +107,7 @@ func TestCollectionSpecLoadCopy(t *testing.T) {
 	spec2 := spec.Copy()
 
 	var objs struct {
-		Prog *Program `ebpf:"xdp_prog"`
+		Prog *Program `gbpf:"xdp_prog"`
 	}
 
 	err = spec.LoadAndAssign(&objs, nil)
@@ -365,19 +368,19 @@ func TestCollectionRewriteConstants(t *testing.T) {
 		"fake_constant_one": uint32(1),
 		"fake_constant_two": uint32(2),
 	})
-	qt.Assert(t, err, qt.IsNotNil, qt.Commentf("RewriteConstants did not fail"))
+	qt.Assert(t, qt.IsNotNil(err), qt.Commentf("RewriteConstants did not fail"))
 
 	var mErr *MissingConstantsError
 	if !errors.As(err, &mErr) {
 		t.Fatal("Error doesn't wrap MissingConstantsError:", err)
 	}
-	qt.Assert(t, mErr.Constants, qt.ContentEquals, []string{"fake_constant_one", "fake_constant_two"})
+	qt.Assert(t, qt.ContentEquals(mErr.Constants, []string{"fake_constant_one", "fake_constant_two"}))
 
 	err = cs.RewriteConstants(map[string]interface{}{
 		"the_constant": uint32(0x42424242),
 	})
-	qt.Assert(t, err, qt.IsNil)
-	qt.Assert(t, cs.Maps[".rodata"].Contents[0].Value, qt.ContentEquals, []byte{0x42, 0x42, 0x42, 0x42})
+	qt.Assert(t, qt.IsNil(err))
+	qt.Assert(t, qt.ContentEquals(cs.Maps[".rodata"].Contents[0].Value.([]byte), []byte{0x42, 0x42, 0x42, 0x42}))
 }
 
 func TestCollectionSpec_LoadAndAssign_LazyLoading(t *testing.T) {
@@ -415,8 +418,8 @@ func TestCollectionSpec_LoadAndAssign_LazyLoading(t *testing.T) {
 	}
 
 	var objs struct {
-		Prog *Program `ebpf:"valid"`
-		Map  *Map     `ebpf:"valid"`
+		Prog *Program `gbpf:"valid"`
+		Map  *Map     `gbpf:"valid"`
 	}
 
 	if err := spec.LoadAndAssign(&objs, nil); err != nil {
@@ -434,10 +437,10 @@ func TestCollectionSpec_LoadAndAssign_LazyLoading(t *testing.T) {
 	}
 }
 
-func TestCollectionAssign(t *testing.T) {
+func TestCollectionSpecAssign(t *testing.T) {
 	var specs struct {
-		Program *ProgramSpec `ebpf:"prog1"`
-		Map     *MapSpec     `ebpf:"map1"`
+		Program *ProgramSpec `gbpf:"prog1"`
+		Map     *MapSpec     `gbpf:"map1"`
 	}
 
 	mapSpec := &MapSpec{
@@ -485,7 +488,7 @@ func TestCollectionAssign(t *testing.T) {
 	}
 
 	unexported := new(struct {
-		foo *MapSpec `ebpf:"map1"`
+		foo *MapSpec `gbpf:"map1"`
 	})
 
 	if err := cs.Assign(unexported); err == nil {
@@ -499,17 +502,17 @@ func TestAssignValues(t *testing.T) {
 	}
 
 	type t1 struct {
-		Bar int `ebpf:"bar"`
+		Bar int `gbpf:"bar"`
 	}
 
 	type t2 struct {
 		t1
-		Foo int `ebpf:"foo"`
+		Foo int `gbpf:"foo"`
 	}
 
 	type t2ptr struct {
 		*t1
-		Foo int `ebpf:"foo"`
+		Foo int `gbpf:"foo"`
 	}
 
 	invalid := []struct {
@@ -521,11 +524,11 @@ func TestAssignValues(t *testing.T) {
 		{"pointer to non-struct", new(int)},
 		{"embedded nil pointer", &t2ptr{}},
 		{"unexported field", new(struct {
-			foo int `ebpf:"foo"`
+			foo int `gbpf:"foo"`
 		})},
 		{"identical tag", new(struct {
-			Foo1 int `ebpf:"foo"`
-			Foo2 int `ebpf:"foo"`
+			Foo1 int `gbpf:"foo"`
+			Foo2 int `gbpf:"foo"`
 		})},
 	}
 
@@ -559,6 +562,89 @@ func TestAssignValues(t *testing.T) {
 
 }
 
+func TestCollectionAssign(t *testing.T) {
+	var objs struct {
+		Program *Program `gbpf:"prog1"`
+		Map     *Map     `gbpf:"map1"`
+	}
+
+	cs := &CollectionSpec{
+		Maps: map[string]*MapSpec{
+			"map1": {
+				Type:       Array,
+				KeySize:    4,
+				ValueSize:  4,
+				MaxEntries: 1,
+			},
+		},
+		Programs: map[string]*ProgramSpec{
+			"prog1": {
+				Type: SocketFilter,
+				Instructions: asm.Instructions{
+					asm.LoadImm(asm.R0, 0, asm.DWord),
+					asm.Return(),
+				},
+				License: "MIT",
+			},
+		},
+	}
+
+	coll, err := NewCollection(cs)
+	qt.Assert(t, qt.IsNil(err))
+	defer coll.Close()
+
+	qt.Assert(t, qt.IsNil(coll.Assign(&objs)))
+	defer objs.Program.Close()
+	defer objs.Map.Close()
+
+	// Check that objs has received ownership of map and prog
+	qt.Assert(t, qt.IsTrue(objs.Program.FD() >= 0))
+	qt.Assert(t, qt.IsTrue(objs.Map.FD() >= 0))
+
+	// Check that the collection has lost ownership
+	qt.Assert(t, qt.IsNil(coll.Programs["prog1"]))
+	qt.Assert(t, qt.IsNil(coll.Maps["map1"]))
+}
+
+func TestCollectionAssignFail(t *testing.T) {
+	// `map2` does not exist
+	var objs struct {
+		Program *Program `gbpf:"prog1"`
+		Map     *Map     `gbpf:"map2"`
+	}
+
+	cs := &CollectionSpec{
+		Maps: map[string]*MapSpec{
+			"map1": {
+				Type:       Array,
+				KeySize:    4,
+				ValueSize:  4,
+				MaxEntries: 1,
+			},
+		},
+		Programs: map[string]*ProgramSpec{
+			"prog1": {
+				Type: SocketFilter,
+				Instructions: asm.Instructions{
+					asm.LoadImm(asm.R0, 0, asm.DWord),
+					asm.Return(),
+				},
+				License: "MIT",
+			},
+		},
+	}
+
+	coll, err := NewCollection(cs)
+	qt.Assert(t, qt.IsNil(err))
+	defer coll.Close()
+
+	qt.Assert(t, qt.IsNotNil(coll.Assign(&objs)))
+
+	// Check that the collection has retained ownership
+	qt.Assert(t, qt.IsNotNil(coll.Programs["prog1"]))
+	qt.Assert(t, qt.IsNotNil(coll.Maps["map1"]))
+}
+
 func TestIncompleteLoadAndAssign(t *testing.T) {
 	spec := &CollectionSpec{
 		Programs: map[string]*ProgramSpec{
@@ -582,9 +668,9 @@ func TestIncompleteLoadAndAssign(t *testing.T) {
 
 	s := struct {
 		// Assignment to Valid should execute and succeed.
-		Valid *Program `ebpf:"valid"`
+		Valid *Program `gbpf:"valid"`
 		// Assignment to Invalid should fail and cause Valid's fd to be closed.
-		Invalid *Program `ebpf:"invalid"`
+		Invalid *Program `gbpf:"invalid"`
 	}{}
 
 	if err := spec.LoadAndAssign(&s, nil); err == nil {
@@ -605,7 +691,7 @@ func TestIncompleteLoadAndAssign(t *testing.T) {
 }
 
 func BenchmarkNewCollection(b *testing.B) {
-	file := fmt.Sprintf("testdata/loader-%s.elf", internal.ClangEndian)
+	file := testutils.NativeFile(b, "testdata/loader-%s.elf")
 	spec, err := LoadCollectionSpec(file)
 	if err != nil {
 		b.Fatal(err)
@@ -629,7 +715,7 @@ func BenchmarkNewCollection(b *testing.B) {
 }
 
 func BenchmarkNewCollectionManyProgs(b *testing.B) {
-	file := fmt.Sprintf("testdata/manyprogs-%s.elf", internal.ClangEndian)
+	file := testutils.NativeFile(b, "testdata/manyprogs-%s.elf")
 	spec, err := LoadCollectionSpec(file)
 	if err != nil {
 		b.Fatal(err)
@@ -644,6 +730,27 @@ func BenchmarkNewCollectionManyProgs(b *testing.B) {
 			b.Fatal(err)
 		}
 		coll.Close()
+	}
+}
+
+func BenchmarkLoadCollectionManyProgs(b *testing.B) {
+	file, err := os.Open(testutils.NativeFile(b, "testdata/manyprogs-%s.elf"))
+	qt.Assert(b, qt.IsNil(err))
+	defer file.Close()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		_, err := file.Seek(0, io.SeekStart)
+		if err != nil {
+			b.Fatal(err)
+		}
+
+		_, err = LoadCollectionSpecFromReader(file)
+		if err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
@@ -670,12 +777,12 @@ func ExampleCollectionSpec_Assign() {
 	}
 
 	type maps struct {
-		Map *MapSpec `ebpf:"map1"`
+		Map *MapSpec `gbpf:"map1"`
 	}
 
 	var specs struct {
 		maps
-		Program *ProgramSpec `ebpf:"prog1"`
+		Program *ProgramSpec `gbpf:"prog1"`
 	}
 
 	if err := spec.Assign(&specs); err != nil {
@@ -712,8 +819,8 @@ func ExampleCollectionSpec_LoadAndAssign() {
 	}
 
 	var objs struct {
-		Program *Program `ebpf:"prog1"`
-		Map     *Map     `ebpf:"map1"`
+		Program *Program `gbpf:"prog1"`
+		Map     *Map     `gbpf:"map1"`
 	}
 
 	if err := spec.LoadAndAssign(&objs, nil); err != nil {

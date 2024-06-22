@@ -6,6 +6,6 @@ import (
 	"github.com/khulnasoft/gbpf/internal/testutils"
 )
 
-func TestHaveBPFLinkPerfEvent(t *testing.T) {
-	testutils.CheckFeatureTest(t, haveBPFLinkPerfEvent)
+func TestHavgBPFLinkPerfEvent(t *testing.T) {
+	testutils.CheckFeatureTest(t, havgBPFLinkPerfEvent)
 }

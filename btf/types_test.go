@@ -1,11 +1,14 @@
 package btf
 
 import (
+	"bytes"
+	"encoding/binary"
 	"fmt"
+	"io"
 	"reflect"
 	"testing"
 
-	qt "github.com/frankban/quicktest"
+	"github.com/go-quicktest/qt"
 	"github.com/google/go-cmp/cmp"
 )
 
@@ -35,34 +38,11 @@ func TestSizeof(t *testing.T) {
 	}
 }
 
-func TestPow(t *testing.T) {
-	tests := []struct {
-		n int
-		r bool
-	}{
-		{0, false},
-		{1, true},
-		{2, true},
-		{3, false},
-		{4, true},
-		{5, false},
-		{8, true},
-	}
-
-	for _, tt := range tests {
-		t.Run(fmt.Sprintf("%d", tt.n), func(t *testing.T) {
-			if want, got := tt.r, pow(tt.n); want != got {
-				t.Errorf("unexpected result for n %d; want: %v, got: %v", tt.n, want, got)
-			}
-		})
-	}
-}
-
 func TestCopy(t *testing.T) {
-	_ = Copy((*Void)(nil), nil)
+	_ = Copy((*Void)(nil))
 
 	in := &Int{Size: 4}
-	out := Copy(in, nil)
+	out := Copy(in)
 
 	in.Size = 8
 	if size := out.(*Int).Size; size != 4 {
@@ -70,7 +50,7 @@ func TestCopy(t *testing.T) {
 	}
 
 	t.Run("cyclical", func(t *testing.T) {
-		_ = Copy(newCyclicalType(2), nil)
+		_ = Copy(newCyclicalType(2))
 	})
 
 	t.Run("identity", func(t *testing.T) {
@@ -81,10 +61,10 @@ func TestCopy(t *testing.T) {
 				{Name: "a", Type: u16},
 				{Name: "b", Type: u16},
 			},
-		}, nil)
+		})
 
 		outStruct := out.(*Struct)
-		qt.Assert(t, outStruct.Members[0].Type, qt.Equals, outStruct.Members[1].Type)
+		qt.Assert(t, qt.Equals(outStruct.Members[0].Type, outStruct.Members[1].Type))
 	})
 }
 
@@ -96,30 +76,30 @@ func TestAs(t *testing.T) {
 	vol := &Volatile{cst}
 
 	// It's possible to retrieve qualifiers and Typedefs.
-	haveVol, ok := as[*Volatile](vol)
-	qt.Assert(t, ok, qt.IsTrue)
-	qt.Assert(t, haveVol, qt.Equals, vol)
+	haveVol, ok := As[*Volatile](vol)
+	qt.Assert(t, qt.IsTrue(ok))
+	qt.Assert(t, qt.Equals(haveVol, vol))
 
-	haveTd, ok := as[*Typedef](vol)
-	qt.Assert(t, ok, qt.IsTrue)
-	qt.Assert(t, haveTd, qt.Equals, td)
+	haveTd, ok := As[*Typedef](vol)
+	qt.Assert(t, qt.IsTrue(ok))
+	qt.Assert(t, qt.Equals(haveTd, td))
 
-	haveCst, ok := as[*Const](vol)
-	qt.Assert(t, ok, qt.IsTrue)
-	qt.Assert(t, haveCst, qt.Equals, cst)
+	haveCst, ok := As[*Const](vol)
+	qt.Assert(t, qt.IsTrue(ok))
+	qt.Assert(t, qt.Equals(haveCst, cst))
 
 	// Make sure we don't skip Pointer.
-	haveI, ok := as[*Int](vol)
-	qt.Assert(t, ok, qt.IsFalse)
-	qt.Assert(t, haveI, qt.IsNil)
+	haveI, ok := As[*Int](vol)
+	qt.Assert(t, qt.IsFalse(ok))
+	qt.Assert(t, qt.IsNil(haveI))
 
 	// Make sure we can always retrieve Pointer.
 	for _, typ := range []Type{
 		td, cst, vol, ptr,
 	} {
-		have, ok := as[*Pointer](typ)
-		qt.Assert(t, ok, qt.IsTrue)
-		qt.Assert(t, have, qt.Equals, ptr)
+		have, ok := As[*Pointer](typ)
+		qt.Assert(t, qt.IsTrue(ok))
+		qt.Assert(t, qt.Equals(have, ptr))
 	}
 }
 
@@ -130,7 +110,7 @@ func BenchmarkCopy(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		Copy(typ, nil)
+		Copy(typ)
 	}
 }
 
@@ -213,7 +193,7 @@ func TestType(t *testing.T) {
 			}
 
 			var a []*Type
-			walkType(typ, func(t *Type) { a = append(a, t) })
+			children(typ, func(t *Type) bool { a = append(a, t); return true })
 
 			if _, ok := typ.(*cycle); !ok {
 				if n := countChildren(t, reflect.TypeOf(typ)); len(a) < n {
@@ -222,7 +202,7 @@ func TestType(t *testing.T) {
 			}
 
 			var b []*Type
-			walkType(typ, func(t *Type) { b = append(b, t) })
+			children(typ, func(t *Type) bool { b = append(b, t); return true })
 
 			if diff := cmp.Diff(a, b, compareTypes); diff != "" {
 				t.Errorf("Walk mismatch (-want +got):\n%s", diff)
@@ -240,9 +220,9 @@ func TestTagMarshaling(t *testing.T) {
 			s := specFromTypes(t, []Type{typ})
 
 			have, err := s.TypeByID(1)
-			qt.Assert(t, err, qt.IsNil)
+			qt.Assert(t, qt.IsNil(err))
 
-			qt.Assert(t, have, qt.DeepEquals, typ)
+			qt.Assert(t, qt.DeepEquals(have, typ))
 		})
 	}
 }
@@ -316,11 +296,11 @@ func TestFormatType(t *testing.T) {
 			t.Log(str)
 
 			for _, want := range test.contains {
-				qt.Assert(t, str, qt.Contains, want)
+				qt.Assert(t, qt.StringContains(str, want))
 			}
 
 			for _, notWant := range test.omits {
-				qt.Assert(t, str, qt.Not(qt.Contains), notWant)
+				qt.Assert(t, qt.Not(qt.StringContains(str, notWant)))
 			}
 		})
 	}
@@ -370,8 +350,8 @@ func TestUnderlyingType(t *testing.T) {
 			root.Type = test.fn(root)
 
 			got, ok := UnderlyingType(root).(*cycle)
-			qt.Assert(t, ok, qt.IsTrue)
-			qt.Assert(t, got.root, qt.Equals, root)
+			qt.Assert(t, qt.IsTrue(ok))
+			qt.Assert(t, qt.Equals[Type](got.root, root))
 		})
 	}
 
@@ -379,7 +359,7 @@ func TestUnderlyingType(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			want := &Int{}
 			got := UnderlyingType(test.fn(want))
-			qt.Assert(t, got, qt.Equals, want)
+			qt.Assert(t, qt.Equals[Type](got, want))
 		})
 	}
 }
@@ -396,26 +376,46 @@ func TestInflateLegacyBitfield(t *testing.T) {
 	data.SetBits(size)
 	rawInt.data = &data
 
+	var (
+		before bytes.Buffer
+		after  bytes.Buffer
+	)
+
 	var beforeInt rawType
 	beforeInt.SetKind(kindStruct)
 	beforeInt.SetVlen(1)
 	beforeInt.data = []btfMember{{Type: 2}}
 
+	if err := beforeInt.Marshal(&before, binary.LittleEndian); err != nil {
+		t.Fatal(err)
+	}
+	if err := rawInt.Marshal(&before, binary.LittleEndian); err != nil {
+		t.Fatal(err)
+	}
+
 	afterInt := beforeInt
 	afterInt.data = []btfMember{{Type: 1}}
+
+	if err := rawInt.Marshal(&after, binary.LittleEndian); err != nil {
+		t.Fatal(err)
+	}
+	if err := afterInt.Marshal(&after, binary.LittleEndian); err != nil {
+		t.Fatal(err)
+	}
 
 	emptyStrings := newStringTable("")
 
 	for _, test := range []struct {
-		name string
-		raw  []rawType
+		name   string
+		reader io.Reader
 	}{
-		{"struct before int", []rawType{beforeInt, rawInt}},
-		{"struct after int", []rawType{rawInt, afterInt}},
+		{"struct before int", &before},
+		{"struct after int", &after},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			types, err := inflateRawTypes(test.raw, emptyStrings, nil)
+			types, err := readAndInflateTypes(test.reader, binary.LittleEndian, 2, emptyStrings, nil)
 			if err != nil {
+				fmt.Println(before.Bytes())
 				t.Fatal(err)
 			}
 
@@ -468,7 +468,10 @@ func BenchmarkWalk(b *testing.B) {
 
 			for i := 0; i < b.N; i++ {
 				var dq typeDeque
-				walkType(typ, dq.Push)
+				children(typ, func(child *Type) bool {
+					dq.Push(child)
+					return true
+				})
 			}
 		})
 	}
@@ -496,11 +499,9 @@ func BenchmarkUnderlyingType(b *testing.B) {
 	})
 }
 
-// Copy can be used with UnderlyingType to strip qualifiers from a type graph.
-func ExampleCopy_stripQualifiers() {
+// As can be used to strip qualifiers from a Type.
+func ExampleAs() {
 	a := &Volatile{Type: &Pointer{Target: &Typedef{Name: "foo", Type: &Int{Size: 2}}}}
-	b := Copy(a, UnderlyingType)
-	// b has Volatile and Typedef removed.
-	fmt.Printf("%3v\n", b)
-	// Output: Pointer[target=Int[unsigned size=16]]
+	fmt.Println(As[*Pointer](a))
+	// Output: Pointer[target=Typedef:"foo"] true
 }

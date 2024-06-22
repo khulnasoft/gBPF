@@ -9,7 +9,7 @@ import (
 	"github.com/khulnasoft/gbpf/btf"
 	"github.com/khulnasoft/gbpf/internal"
 
-	qt "github.com/frankban/quicktest"
+	"github.com/go-quicktest/qt"
 )
 
 func BenchmarkParse(b *testing.B) {
@@ -77,7 +77,7 @@ func TestParse(t *testing.T) {
 		"CONFIG_STR":      `"abracad"`,
 		"CONFIG_FOO":      `"foo"`,
 	}
-	qt.Assert(t, config, qt.DeepEquals, expected)
+	qt.Assert(t, qt.DeepEquals(config, expected))
 }
 
 func TestParseFiltered(t *testing.T) {
@@ -97,7 +97,7 @@ func TestParseFiltered(t *testing.T) {
 	}
 
 	expected := map[string]string{"CONFIG_FOO": `"foo"`}
-	qt.Assert(t, config, qt.DeepEquals, expected)
+	qt.Assert(t, qt.DeepEquals(config, expected))
 }
 
 func TestParseGzipped(t *testing.T) {
@@ -132,7 +132,7 @@ func TestParseGzippedFiltered(t *testing.T) {
 	}
 
 	expected := map[string]string{"CONFIG_HZ": "1000"}
-	qt.Assert(t, config, qt.DeepEquals, expected)
+	qt.Assert(t, qt.DeepEquals(config, expected))
 }
 
 func TestProcessKconfigBadLine(t *testing.T) {
@@ -141,10 +141,10 @@ func TestProcessKconfigBadLine(t *testing.T) {
 	m := make(map[string]string)
 
 	err := processKconfigLine([]byte("CONFIG_FOO"), m, nil)
-	qt.Assert(t, err, qt.IsNotNil, qt.Commentf("line has no '='"))
+	qt.Assert(t, qt.IsNotNil(err), qt.Commentf("line has no '='"))
 
 	err = processKconfigLine([]byte("CONFIG_FOO="), m, nil)
-	qt.Assert(t, err, qt.IsNotNil, qt.Commentf("line has no value"))
+	qt.Assert(t, qt.IsNotNil(err), qt.Commentf("line has no value"))
 }
 
 func TestPutValue(t *testing.T) {
@@ -396,7 +396,7 @@ func TestPutValue(t *testing.T) {
 		if len(c.comment) > 0 {
 			err := PutValue(make([]byte, 0), c.typ, c.value)
 
-			qt.Assert(t, err, qt.IsNotNil, qt.Commentf(c.comment))
+			qt.Assert(t, qt.IsNotNil(err), qt.Commentf(c.comment))
 
 			continue
 		}
@@ -411,8 +411,119 @@ func TestPutValue(t *testing.T) {
 		data := make([]byte, len(expected))
 		err = PutValue(data, c.typ, c.value)
 
-		qt.Assert(t, err, qt.IsNil)
+		qt.Assert(t, qt.IsNil(err))
 
-		qt.Assert(t, data, qt.DeepEquals, expected)
+		qt.Assert(t, qt.DeepEquals(data, expected))
 	}
+}
+
+func TestPutInteger(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		expected []byte
+		integer  *btf.Int
+		n        uint64
+		err      bool
+		comment  string
+	}
+
+	cases := []testCase{
+		{
+			integer:  &btf.Int{Size: 1, Encoding: btf.Unsigned},
+			n:        0x01,
+			expected: []byte{0x01},
+		},
+		{
+			integer:  &btf.Int{Size: 2, Encoding: btf.Unsigned},
+			n:        0x902a,
+			expected: []byte{0x2a, 0x90},
+		},
+		{
+			integer:  &btf.Int{Size: 4, Encoding: btf.Unsigned},
+			n:        0x01234567,
+			expected: []byte{0x67, 0x45, 0x23, 0x01},
+		},
+		{
+			integer: &btf.Int{Size: 1, Encoding: btf.Signed},
+			n:       0x80,
+			err:     true,
+			comment: "outside of range int8 -128 ~ 127",
+		},
+		{
+			integer: &btf.Int{Size: 2, Encoding: btf.Signed},
+			n:       0xabcdabcd,
+			err:     true,
+			comment: "outside of range int16 -32768 ~ 32767",
+		},
+		{
+			integer: &btf.Int{Size: 4, Encoding: btf.Signed},
+			n:       0x1234567890,
+			err:     true,
+			comment: "outside of range int32 -2147483648 ~ 2147483647",
+		},
+		{
+			integer:  &btf.Int{Size: 2, Encoding: btf.Signed},
+			n:        0xffffffffffffffff,
+			expected: []byte{0xff, 0xff, 0x00, 0x00},
+			comment:  "n means -1",
+		},
+		{
+			integer: &btf.Int{Size: 2, Encoding: btf.Signed},
+			n:       0xffffffffffffffff - 0x8000,
+			err:     true,
+			comment: "n means -32768(-MinInt16) - 1 in signed value",
+		},
+		{
+			integer:  &btf.Int{Size: 2, Encoding: btf.Signed},
+			n:        0x7fff,
+			expected: []byte{0xff, 0x7f},
+			comment:  "maximum value of int16",
+		},
+		{
+			integer:  &btf.Int{Size: 2, Encoding: btf.Unsigned},
+			n:        0xffff,
+			expected: []byte{0xff, 0xff},
+		},
+		{
+			integer:  &btf.Int{Size: 4, Encoding: btf.Unsigned},
+			n:        0xffffffff,
+			expected: []byte{0xff, 0xff, 0xff, 0xff},
+		},
+		{
+			integer: &btf.Int{Size: 4, Encoding: btf.Signed},
+			n:       0x80000000,
+			err:     true,
+			comment: "outside of range int32 ~2147483648 ~ 2147483647",
+		},
+		{
+			integer: &btf.Int{Size: 4, Encoding: btf.Signed},
+			n:       0xffffffffffffffff - 0x80000000,
+			err:     true,
+			comment: "outside of range int32 ~2147483648 ~ 2147483647",
+		},
+		{
+			integer:  &btf.Int{Size: 8, Encoding: btf.Unsigned},
+			n:        0xffffffffffffffff,
+			expected: []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff},
+		},
+	}
+
+	for _, c := range cases {
+		data := make([]byte, len(c.expected))
+		err := PutInteger(data, c.integer, c.n)
+
+		if c.err {
+			qt.Assert(t, qt.IsNotNil(err))
+			continue
+		}
+
+		qt.Assert(t, qt.IsNil(err))
+		qt.Assert(t, qt.DeepEquals(data, c.expected), qt.Commentf(c.comment))
+	}
+}
+
+func TestPutIntegerError(t *testing.T) {
+	qt.Assert(t, qt.IsNotNil(PutInteger(nil, &btf.Int{Size: 2}, 0)), qt.Commentf("slice too small for int"))
+	qt.Assert(t, qt.IsNotNil(PutInteger(nil, &btf.Int{Encoding: btf.Bool}, 2)), qt.Commentf("n too big for bool"))
 }

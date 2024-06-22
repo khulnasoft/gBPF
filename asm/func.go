@@ -2,14 +2,14 @@ package asm
 
 //go:generate go run golang.org/x/tools/cmd/stringer@latest -output func_string.go -type=BuiltinFunc
 
-// BuiltinFunc is a built-in eBPF function.
+// BuiltinFunc is a built-in gBPF function.
 type BuiltinFunc int32
 
 func (_ BuiltinFunc) Max() BuiltinFunc {
 	return maxBuiltinFunc - 1
 }
 
-// eBPF built-in functions
+// gBPF built-in functions
 //
 // You can regenerate this list using the following gawk script:
 //

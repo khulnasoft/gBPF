@@ -1,6 +1,6 @@
 //go:build linux
 
-package ebpf_test
+package gbpf_test
 
 import (
 	"bytes"
@@ -79,7 +79,7 @@ var program = [...]byte{
 	0010, 0000, 0000, 0000, 0000, 0000, 0000, 0000, 0030, 0000, 0000, 0000, 0000, 0000, 0000, 0000,
 }
 
-// ExampleSocketELF demonstrates how to load an eBPF program from an ELF,
+// ExampleSocketELF demonstrates how to load an gBPF program from an ELF,
 // and attach it to a raw socket.
 func Example_socketELF() {
 	const SO_ATTACH_BPF = 50
@@ -87,14 +87,14 @@ func Example_socketELF() {
 	index := flag.Int("index", 0, "specify ethernet index")
 	flag.Parse()
 
-	spec, err := ebpf.LoadCollectionSpecFromReader(bytes.NewReader(program[:]))
+	spec, err := gbpf.LoadCollectionSpecFromReader(bytes.NewReader(program[:]))
 	if err != nil {
 		panic(err)
 	}
 
 	var objs struct {
-		Prog  *ebpf.Program `ebpf:"bpf_prog1"`
-		Stats *ebpf.Map     `ebpf:"my_map"`
+		Prog  *gbpf.Program `gbpf:"bpf_prog1"`
+		Stats *gbpf.Map     `gbpf:"my_map"`
 	}
 
 	if err := spec.LoadAndAssign(&objs, nil); err != nil {

@@ -1,4 +1,4 @@
-package ebpf
+package gbpf
 
 import (
 	"strings"
@@ -55,10 +55,14 @@ func TestHaveProbeReadKernel(t *testing.T) {
 	testutils.CheckFeatureTest(t, haveProbeReadKernel)
 }
 
-func TestHaveBPFToBPFCalls(t *testing.T) {
-	testutils.CheckFeatureTest(t, haveBPFToBPFCalls)
+func TestHavgBPFToBPFCalls(t *testing.T) {
+	testutils.CheckFeatureTest(t, havgBPFToBPFCalls)
 }
 
 func TestHaveSyscallWrapper(t *testing.T) {
 	testutils.CheckFeatureTest(t, haveSyscallWrapper)
+}
+
+func TestHaveProgramExtInfos(t *testing.T) {
+	testutils.CheckFeatureTest(t, haveProgramExtInfos)
 }

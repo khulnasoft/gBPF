@@ -7,12 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"sync"
 	"unsafe"
 
 	"github.com/khulnasoft/gbpf/internal"
-
-	"golang.org/x/exp/slices"
 )
 
 // Marshal turns data into a byte slice using the system's native endianness.

@@ -6,12 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
+	"runtime"
+	"sync"
+	"sync/atomic"
 	"testing"
+
+	"github.com/go-quicktest/qt"
 
 	"github.com/khulnasoft/gbpf/internal"
 	"github.com/khulnasoft/gbpf/internal/testutils"
-	qt "github.com/frankban/quicktest"
 )
 
 func vmlinuxSpec(tb testing.TB) *Spec {
@@ -19,16 +24,15 @@ func vmlinuxSpec(tb testing.TB) *Spec {
 
 	// /sys/kernel/btf was introduced in 341dfcf8d78e ("btf: expose BTF info
 	// through sysfs"), which shipped in Linux 5.4.
-	testutils.SkipOnOldKernel(tb, "5.4", "vmlinux BTF in sysfs")
+	if _, err := os.Stat("/sys/kernel/btf/vmlinux"); errors.Is(err, fs.ErrNotExist) {
+		tb.Skip("No /sys/kernel/btf/vmlinux")
+	}
 
-	spec, fallback, err := kernelSpec()
+	spec, err := LoadKernelSpec()
 	if err != nil {
 		tb.Fatal(err)
 	}
-	if fallback {
-		tb.Fatal("/sys/kernel/btf/vmlinux is not available")
-	}
-	return spec.Copy()
+	return spec
 }
 
 type specAndRawBTF struct {
@@ -36,7 +40,7 @@ type specAndRawBTF struct {
 	spec *Spec
 }
 
-var vmlinuxTestdata = internal.Memoize(func() (specAndRawBTF, error) {
+var vmlinuxTestdata = sync.OnceValues(func() (specAndRawBTF, error) {
 	b, err := internal.ReadAllCompressed("testdata/vmlinux.btf.gz")
 	if err != nil {
 		return specAndRawBTF{}, err
@@ -225,7 +229,7 @@ func BenchmarkParseVmlinux(b *testing.B) {
 func TestParseCurrentKernelBTF(t *testing.T) {
 	spec := vmlinuxSpec(t)
 
-	if len(spec.namedTypes) == 0 {
+	if len(spec.imm.namedTypes) == 0 {
 		t.Fatal("Empty kernel BTF")
 	}
 
@@ -251,12 +255,12 @@ func TestFindVMLinux(t *testing.T) {
 	}
 	defer file.Close()
 
-	spec, err := loadSpecFromELF(file)
+	spec, err := LoadSpecFromReader(file)
 	if err != nil {
 		t.Fatal("Can't load BTF:", err)
 	}
 
-	if len(spec.namedTypes) == 0 {
+	if len(spec.imm.namedTypes) == 0 {
 		t.Fatal("Empty kernel BTF")
 	}
 }
@@ -304,7 +308,9 @@ func TestLoadSpecFromElf(t *testing.T) {
 }
 
 func TestVerifierError(t *testing.T) {
-	_, err := NewHandle(&Builder{})
+	b, err := NewBuilder([]Type{&Int{Encoding: 255}})
+	qt.Assert(t, qt.IsNil(err))
+	_, err = NewHandle(b)
 	testutils.SkipIfNotSupported(t, err)
 	var ve *internal.VerifierError
 	if !errors.As(err, &ve) {
@@ -313,17 +319,6 @@ func TestVerifierError(t *testing.T) {
 
 	if ve.Truncated {
 		t.Fatalf("expected non-truncated verifier log: %v", err)
-	}
-}
-
-func TestLoadKernelSpec(t *testing.T) {
-	if _, err := os.Stat("/sys/kernel/btf/vmlinux"); os.IsNotExist(err) {
-		t.Skip("/sys/kernel/btf/vmlinux not present")
-	}
-
-	_, err := LoadKernelSpec()
-	if err != nil {
-		t.Fatal("Can't load kernel spec:", err)
 	}
 }
 
@@ -338,11 +333,11 @@ func TestSpecCopy(t *testing.T) {
 	spec := parseELFBTF(t, "../testdata/loader-el.elf")
 	cpy := spec.Copy()
 
-	have := typesFromSpec(t, spec)
-	qt.Assert(t, len(spec.types) > 0, qt.IsTrue)
+	have := typesFromSpec(spec)
+	qt.Assert(t, qt.IsTrue(len(have) > 0))
 
-	want := typesFromSpec(t, cpy)
-	qt.Assert(t, want, qt.HasLen, len(have))
+	want := typesFromSpec(cpy)
+	qt.Assert(t, qt.HasLen(want, len(have)))
 
 	for i := range want {
 		if _, ok := have[i].(*Void); ok {
@@ -358,14 +353,36 @@ func TestSpecCopy(t *testing.T) {
 	}
 }
 
+func TestSpecCopyModifications(t *testing.T) {
+	spec := specFromTypes(t, []Type{&Int{Name: "a", Size: 4}})
+
+	typ, err := spec.TypeByID(1)
+	qt.Assert(t, qt.IsNil(err))
+
+	i := typ.(*Int)
+	i.Name = "b"
+	i.Size = 2
+
+	cpy := spec.Copy()
+	typ2, err := cpy.TypeByID(1)
+	qt.Assert(t, qt.IsNil(err))
+	i2 := typ2.(*Int)
+
+	qt.Assert(t, qt.Not(qt.Equals(i2, i)), qt.Commentf("Types are distinct"))
+	qt.Assert(t, qt.DeepEquals(i2, i), qt.Commentf("Modifications are preserved"))
+
+	i.Name = "bar"
+	qt.Assert(t, qt.Equals(i2.Name, "b"))
+}
+
 func TestSpecTypeByID(t *testing.T) {
 	spec := specFromTypes(t, nil)
 
 	_, err := spec.TypeByID(0)
-	qt.Assert(t, err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 
 	_, err = spec.TypeByID(1)
-	qt.Assert(t, err, qt.ErrorIs, ErrNotFound)
+	qt.Assert(t, qt.ErrorIs(err, ErrNotFound))
 }
 
 func ExampleSpec_TypeByName() {
@@ -409,7 +426,7 @@ func TestTypesIterator(t *testing.T) {
 			t.Fatal("Iterator ended early at item", i)
 		}
 
-		qt.Assert(t, iter.Type, qt.DeepEquals, typ)
+		qt.Assert(t, qt.DeepEquals(iter.Type, typ))
 	}
 
 	if iter.Next() {
@@ -441,8 +458,8 @@ func TestLoadSplitSpecFromReader(t *testing.T) {
 	}
 
 	typeByID, err := splitSpec.TypeByID(typeID)
-	qt.Assert(t, err, qt.IsNil)
-	qt.Assert(t, typeByID, qt.Equals, typ)
+	qt.Assert(t, qt.IsNil(err))
+	qt.Assert(t, qt.Equals(typeByID, typ))
 
 	fnType := typ.(*Func)
 	fnProto := fnType.Type.(*FuncProto)
@@ -458,10 +475,8 @@ func TestLoadSplitSpecFromReader(t *testing.T) {
 		t.Fatal("'int' is not supposed to be found in the split BTF")
 	}
 
-	if fnProto.Return != intType {
-		t.Fatalf("Return type of 'bpf_testmod_init()' (%s) does not match 'int' type (%s)",
-			fnProto.Return, intType)
-	}
+	qt.Assert(t, qt.Not(qt.Equals(fnProto.Return, intType)),
+		qt.Commentf("types found in base of split spec should be copies"))
 
 	// Check that copied split-BTF's spec has correct type indexing
 	splitSpecCopy := splitSpec.Copy()
@@ -492,15 +507,48 @@ func TestFixupDatasecLayout(t *testing.T) {
 		},
 	}
 
-	qt.Assert(t, fixupDatasecLayout(ds), qt.IsNil)
+	qt.Assert(t, qt.IsNil(fixupDatasecLayout(ds)))
 
-	qt.Assert(t, ds.Size, qt.Equals, uint32(40))
-	qt.Assert(t, ds.Vars[0].Offset, qt.Equals, uint32(0))
-	qt.Assert(t, ds.Vars[1].Offset, qt.Equals, uint32(4))
-	qt.Assert(t, ds.Vars[2].Offset, qt.Equals, uint32(5))
-	qt.Assert(t, ds.Vars[3].Offset, qt.Equals, uint32(6))
-	qt.Assert(t, ds.Vars[4].Offset, qt.Equals, uint32(16))
-	qt.Assert(t, ds.Vars[5].Offset, qt.Equals, uint32(32))
+	qt.Assert(t, qt.Equals(ds.Size, 40))
+	qt.Assert(t, qt.Equals(ds.Vars[0].Offset, 0))
+	qt.Assert(t, qt.Equals(ds.Vars[1].Offset, 4))
+	qt.Assert(t, qt.Equals(ds.Vars[2].Offset, 5))
+	qt.Assert(t, qt.Equals(ds.Vars[3].Offset, 6))
+	qt.Assert(t, qt.Equals(ds.Vars[4].Offset, 16))
+	qt.Assert(t, qt.Equals(ds.Vars[5].Offset, 32))
+}
+
+func TestSpecConcurrentAccess(t *testing.T) {
+	spec := vmlinuxTestdataSpec(t)
+
+	maxprocs := runtime.GOMAXPROCS(0)
+	if maxprocs < 2 {
+		t.Error("GOMAXPROCS is lower than 2:", maxprocs)
+	}
+
+	var cond atomic.Int64
+	var wg sync.WaitGroup
+	for i := 0; i < maxprocs; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			n := cond.Add(1)
+			for cond.Load() != int64(maxprocs) {
+				// Spin to increase the chances of a race.
+			}
+
+			if n%2 == 0 {
+				_, _ = spec.AnyTypeByName("gov_update_cpu_data")
+			} else {
+				_ = spec.Copy()
+			}
+		}()
+
+		// Try to get the Goroutines scheduled and spinning.
+		runtime.Gosched()
+	}
+	wg.Wait()
 }
 
 func BenchmarkSpecCopy(b *testing.B) {
@@ -509,5 +557,18 @@ func BenchmarkSpecCopy(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		spec.Copy()
+	}
+}
+
+func BenchmarkSpecTypeByID(b *testing.B) {
+	spec := vmlinuxTestdataSpec(b)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := spec.TypeByID(1)
+		if err != nil {
+			b.Fatal(err)
+		}
 	}
 }

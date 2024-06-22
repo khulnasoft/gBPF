@@ -11,7 +11,7 @@ import (
 func TestIter(t *testing.T) {
 	testutils.SkipOnOldKernel(t, "5.9", "bpf_map iter")
 
-	prog := mustLoadProgram(t, ebpf.Tracing, ebpf.AttachTraceIter, "bpf_map")
+	prog := mustLoadProgram(t, gbpf.Tracing, gbpf.AttachTraceIter, "bpf_map")
 
 	it, err := AttachIter(IterOptions{
 		Program: prog,
@@ -41,10 +41,10 @@ func TestIter(t *testing.T) {
 func TestIterMapElements(t *testing.T) {
 	testutils.SkipOnOldKernel(t, "5.9", "bpf_map_elem iter")
 
-	prog := mustLoadProgram(t, ebpf.Tracing, ebpf.AttachTraceIter, "bpf_map_elem")
+	prog := mustLoadProgram(t, gbpf.Tracing, gbpf.AttachTraceIter, "bpf_map_elem")
 
-	arr, err := ebpf.NewMap(&ebpf.MapSpec{
-		Type:       ebpf.Array,
+	arr, err := gbpf.NewMap(&gbpf.MapSpec{
+		Type:       gbpf.Array,
 		KeySize:    4,
 		ValueSize:  4,
 		MaxEntries: 3,
@@ -83,7 +83,7 @@ func TestUDPIter(t *testing.T) {
 	// Introduced by 5788b3a07fc5 ("net: bpf: Implement bpf iterator for udp")
 	testutils.SkipOnOldKernel(t, "5.9", "udp iter")
 
-	prog := mustLoadProgram(t, ebpf.Tracing, ebpf.AttachTraceIter, "udp")
+	prog := mustLoadProgram(t, gbpf.Tracing, gbpf.AttachTraceIter, "udp")
 
 	it, err := AttachIter(IterOptions{
 		Program: prog,

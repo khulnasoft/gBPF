@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	ignoreKernelVersionEnvVar = "EBPF_TEST_IGNORE_KERNEL_VERSION"
+	ignoreKernelVersionEnvVar = "GBPF_TEST_IGNORE_KERNEL_VERSION"
 )
 
 func CheckFeatureTest(t *testing.T, fn func() error) {
@@ -24,11 +24,7 @@ func checkFeatureTestError(t *testing.T, err error) {
 
 	var ufe *internal.UnsupportedFeatureError
 	if errors.As(err, &ufe) {
-		if ignoreKernelVersionCheck(t.Name()) {
-			t.Skipf("Ignoring error due to %s: %s", ignoreKernelVersionEnvVar, ufe.Error())
-		} else {
-			checkKernelVersion(t, ufe)
-		}
+		checkKernelVersion(t, ufe)
 	} else {
 		t.Error("Feature test failed:", err)
 	}
@@ -66,8 +62,13 @@ func checkKernelVersion(tb testing.TB, ufe *internal.UnsupportedFeatureError) {
 		return
 	}
 
+	tb.Helper()
+
+	if ignoreKernelVersionCheck(tb.Name()) {
+		tb.Skipf("Ignoring error due to %s: %s", ignoreKernelVersionEnvVar, ufe.Error())
+	}
+
 	if !isKernelLessThan(tb, ufe.MinimumVersion) {
-		tb.Helper()
 		tb.Fatalf("Feature '%s' isn't supported even though kernel is newer than %s",
 			ufe.Name, ufe.MinimumVersion)
 	}
@@ -119,10 +120,10 @@ func kernelVersion(tb testing.TB) internal.Version {
 	return v
 }
 
-// ignoreKernelVersionCheck checks if test name should be ignored for kernel version check by checking against environment var EBPF_TEST_IGNORE_KERNEL_VERSION.
-// EBPF_TEST_IGNORE_KERNEL_VERSION is a comma (,) separated list of test names for which kernel version check should be ignored.
+// ignoreKernelVersionCheck checks if test name should be ignored for kernel version check by checking against environment var GBPF_TEST_IGNORE_KERNEL_VERSION.
+// GBPF_TEST_IGNORE_KERNEL_VERSION is a comma (,) separated list of test names for which kernel version check should be ignored.
 //
-// eg: EBPF_TEST_IGNORE_KERNEL_VERSION=TestABC,TestXYZ
+// eg: GBPF_TEST_IGNORE_KERNEL_VERSION=TestABC,TestXYZ
 func ignoreKernelVersionCheck(tName string) bool {
 	tNames := os.Getenv(ignoreKernelVersionEnvVar)
 	if tNames == "" {

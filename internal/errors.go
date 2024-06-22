@@ -37,7 +37,7 @@ func ErrorWithLog(source string, err error, log []byte, truncated bool) *Verifie
 	return &VerifierError{source, err, lines, truncated}
 }
 
-// VerifierError includes information from the eBPF verifier.
+// VerifierError includes information from the gBPF verifier.
 //
 // It summarises the log output, see Format if you want to output the full contents.
 type VerifierError struct {

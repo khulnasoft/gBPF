@@ -2,16 +2,21 @@
 
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/khulnasoft/gbpf)](https://pkg.go.dev/github.com/khulnasoft/gbpf)
 
-See [ebpf.io](https://ebpf.io) for complementary projects from the wider eBPF
+![HoneyGopher](docs/gbpf/gbpf-go.png)
+
+gbpf-go is a pure Go library that provides utilities for loading, compiling, and
+debugging gBPF programs. It has minimal external dependencies and is intended to
+be used in long running processes.
+
+See [gbpf.io](https://gbpf.io) for complementary projects from the wider gBPF
 ecosystem.
 
 ## Getting Started
 
-A small collection of Go and eBPF programs that serve as examples for building
-your own tools can be found under [examples/](examples/).
+Please take a look at our [Getting Started] guide.
 
-[Contributions](CONTRIBUTING.md) are highly encouraged, as they highlight certain use cases of
-eBPF and the library, and help shape the future of the project.
+[Contributions](https://gbpf-go.dev/contributing) are highly encouraged, as they highlight certain use cases of
+gBPF and the library, and help shape the future of the project.
 
 ## Getting Help
 
@@ -20,18 +25,24 @@ Please search for existing threads before starting a new one. Refrain from
 opening issues on the bug tracker if you're just starting out or if you're not
 sure if something is a bug in the library code.
 
+Alternatively, [join](https://gbpf.io/slack) the
+[#gbpf-go](https://khulnasoft.slack.com/messages/gbpf-go) channel on Slack if you
+have other questions regarding the project. Note that this channel is ephemeral
+and has its history erased past a certain point, which is less helpful for
+others running into the same problem later.
+
 ## Packages
 
 This library includes the following packages:
 
 * [asm](https://pkg.go.dev/github.com/khulnasoft/gbpf/asm) contains a basic
-  assembler, allowing you to write eBPF assembly instructions directly
-  within your Go code. (You don't need to use this if you prefer to write your eBPF program in C.)
-* [cmd/gbpf](https://pkg.go.dev/github.com/khulnasoft/gbpf/cmd/gbpf) allows
-  compiling and embedding eBPF programs written in C within Go code. As well as
+  assembler, allowing you to write gBPF assembly instructions directly
+  within your Go code. (You don't need to use this if you prefer to write your gBPF program in C.)
+* [cmd/bpf2go](https://pkg.go.dev/github.com/khulnasoft/gbpf/cmd/bpf2go) allows
+  compiling and embedding gBPF programs written in C within Go code. As well as
   compiling the C code, it auto-generates Go code for loading and manipulating
-  the eBPF program and map objects.
-* [link](https://pkg.go.dev/github.com/khulnasoft/gbpf/link) allows attaching eBPF
+  the gBPF program and map objects.
+* [link](https://pkg.go.dev/github.com/khulnasoft/gbpf/link) allows attaching gBPF
   to various hooks
 * [perf](https://pkg.go.dev/github.com/khulnasoft/gbpf/perf) allows reading from a
   `PERF_EVENT_ARRAY`
@@ -47,24 +58,15 @@ This library includes the following packages:
 
 * A version of Go that is [supported by
   upstream](https://golang.org/doc/devel/release.html#policy)
-* Linux >= 4.9. CI is run against kernel.org LTS releases. 4.4 should work but is
-  not tested against.
-
-## Regenerating Testdata
-
-Run `make` in the root of this repository to rebuild testdata in all
-subpackages. This requires Docker, as it relies on a standardized build
-environment to keep the build output stable.
-
-It is possible to regenerate data using Podman by overriding the `CONTAINER_*`
-variables: `CONTAINER_ENGINE=podman CONTAINER_RUN_ARGS= make`.
-
-The toolchain image build files are kept in [testdata/docker/](testdata/docker/).
+* CI is run against kernel.org LTS releases. >= 4.4 should work but EOL'ed versions
+  are not supported.
 
 ## License
 
-[MIT](LICENSE)
+MIT
 
----
+### gBPF Gopher
 
-KhulnaSoft ❤️ Open Source
+The gBPF honeygopher is based on the Go gopher designed by Renee French.
+
+[Getting Started]: https://gbpf-go.dev/guides/getting-started/

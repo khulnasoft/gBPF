@@ -21,18 +21,18 @@ var HaveProgType = HaveProgramType
 // HaveProgramType probes the running kernel for the availability of the specified program type.
 //
 // See the package documentation for the meaning of the error return value.
-func HaveProgramType(pt ebpf.ProgramType) (err error) {
+func HaveProgramType(pt gbpf.ProgramType) (err error) {
 	return haveProgramTypeMatrix.Result(pt)
 }
 
-func probeProgram(spec *ebpf.ProgramSpec) error {
+func probeProgram(spec *gbpf.ProgramSpec) error {
 	if spec.Instructions == nil {
 		spec.Instructions = asm.Instructions{
 			asm.LoadImm(asm.R0, 0, asm.DWord),
 			asm.Return(),
 		}
 	}
-	prog, err := ebpf.NewProgramWithOptions(spec, ebpf.ProgramOptions{
+	prog, err := gbpf.NewProgramWithOptions(spec, gbpf.ProgramOptions{
 		LogDisabled: true,
 	})
 	if err == nil {
@@ -45,69 +45,69 @@ func probeProgram(spec *ebpf.ProgramSpec) error {
 	// of the struct known by the running kernel, meaning the kernel is too old
 	// to support the given prog type.
 	case errors.Is(err, unix.EINVAL), errors.Is(err, unix.E2BIG):
-		err = ebpf.ErrNotSupported
+		err = gbpf.ErrNotSupported
 	}
 
 	return err
 }
 
-var haveProgramTypeMatrix = internal.FeatureMatrix[ebpf.ProgramType]{
-	ebpf.SocketFilter:  {Version: "3.19"},
-	ebpf.Kprobe:        {Version: "4.1"},
-	ebpf.SchedCLS:      {Version: "4.1"},
-	ebpf.SchedACT:      {Version: "4.1"},
-	ebpf.TracePoint:    {Version: "4.7"},
-	ebpf.XDP:           {Version: "4.8"},
-	ebpf.PerfEvent:     {Version: "4.9"},
-	ebpf.CGroupSKB:     {Version: "4.10"},
-	ebpf.CGroupSock:    {Version: "4.10"},
-	ebpf.LWTIn:         {Version: "4.10"},
-	ebpf.LWTOut:        {Version: "4.10"},
-	ebpf.LWTXmit:       {Version: "4.10"},
-	ebpf.SockOps:       {Version: "4.13"},
-	ebpf.SkSKB:         {Version: "4.14"},
-	ebpf.CGroupDevice:  {Version: "4.15"},
-	ebpf.SkMsg:         {Version: "4.17"},
-	ebpf.RawTracepoint: {Version: "4.17"},
-	ebpf.CGroupSockAddr: {
+var haveProgramTypeMatrix = internal.FeatureMatrix[gbpf.ProgramType]{
+	gbpf.SocketFilter:  {Version: "3.19"},
+	gbpf.Kprobe:        {Version: "4.1"},
+	gbpf.SchedCLS:      {Version: "4.1"},
+	gbpf.SchedACT:      {Version: "4.1"},
+	gbpf.TracePoint:    {Version: "4.7"},
+	gbpf.XDP:           {Version: "4.8"},
+	gbpf.PerfEvent:     {Version: "4.9"},
+	gbpf.CGroupSKB:     {Version: "4.10"},
+	gbpf.CGroupSock:    {Version: "4.10"},
+	gbpf.LWTIn:         {Version: "4.10"},
+	gbpf.LWTOut:        {Version: "4.10"},
+	gbpf.LWTXmit:       {Version: "4.10"},
+	gbpf.SockOps:       {Version: "4.13"},
+	gbpf.SkSKB:         {Version: "4.14"},
+	gbpf.CGroupDevice:  {Version: "4.15"},
+	gbpf.SkMsg:         {Version: "4.17"},
+	gbpf.RawTracepoint: {Version: "4.17"},
+	gbpf.CGroupSockAddr: {
 		Version: "4.17",
 		Fn: func() error {
-			return probeProgram(&ebpf.ProgramSpec{
-				Type:       ebpf.CGroupSockAddr,
-				AttachType: ebpf.AttachCGroupInet4Connect,
+			return probeProgram(&gbpf.ProgramSpec{
+				Type:       gbpf.CGroupSockAddr,
+				AttachType: gbpf.AttachCGroupInet4Connect,
 			})
 		},
 	},
-	ebpf.LWTSeg6Local:          {Version: "4.18"},
-	ebpf.LircMode2:             {Version: "4.18"},
-	ebpf.SkReuseport:           {Version: "4.19"},
-	ebpf.FlowDissector:         {Version: "4.20"},
-	ebpf.CGroupSysctl:          {Version: "5.2"},
-	ebpf.RawTracepointWritable: {Version: "5.2"},
-	ebpf.CGroupSockopt: {
+	gbpf.LWTSeg6Local:          {Version: "4.18"},
+	gbpf.LircMode2:             {Version: "4.18"},
+	gbpf.SkReuseport:           {Version: "4.19"},
+	gbpf.FlowDissector:         {Version: "4.20"},
+	gbpf.CGroupSysctl:          {Version: "5.2"},
+	gbpf.RawTracepointWritable: {Version: "5.2"},
+	gbpf.CGroupSockopt: {
 		Version: "5.3",
 		Fn: func() error {
-			return probeProgram(&ebpf.ProgramSpec{
-				Type:       ebpf.CGroupSockopt,
-				AttachType: ebpf.AttachCGroupGetsockopt,
+			return probeProgram(&gbpf.ProgramSpec{
+				Type:       gbpf.CGroupSockopt,
+				AttachType: gbpf.AttachCGroupGetsockopt,
 			})
 		},
 	},
-	ebpf.Tracing: {
+	gbpf.Tracing: {
 		Version: "5.5",
 		Fn: func() error {
-			return probeProgram(&ebpf.ProgramSpec{
-				Type:       ebpf.Tracing,
-				AttachType: ebpf.AttachTraceFEntry,
+			return probeProgram(&gbpf.ProgramSpec{
+				Type:       gbpf.Tracing,
+				AttachType: gbpf.AttachTraceFEntry,
 				AttachTo:   "bpf_init",
 			})
 		},
 	},
-	ebpf.StructOps: {
+	gbpf.StructOps: {
 		Version: "5.6",
 		Fn: func() error {
-			err := probeProgram(&ebpf.ProgramSpec{
-				Type:    ebpf.StructOps,
+			err := probeProgram(&gbpf.ProgramSpec{
+				Type:    gbpf.StructOps,
 				License: "GPL",
 			})
 			if errors.Is(err, sys.ENOTSUPP) {
@@ -117,7 +117,7 @@ var haveProgramTypeMatrix = internal.FeatureMatrix[ebpf.ProgramType]{
 			return err
 		},
 	},
-	ebpf.Extension: {
+	gbpf.Extension: {
 		Version: "5.6",
 		Fn: func() error {
 			// create btf.Func to add to first ins of target and extension so both progs are btf powered
@@ -125,6 +125,9 @@ var haveProgramTypeMatrix = internal.FeatureMatrix[ebpf.ProgramType]{
 				Name: "a",
 				Type: &btf.FuncProto{
 					Return: &btf.Int{},
+					Params: []btf.FuncParam{
+						{Name: "ctx", Type: &btf.Pointer{Target: &btf.Struct{Name: "xdp_md"}}},
+					},
 				},
 				Linkage: btf.GlobalFunc,
 			}
@@ -134,12 +137,12 @@ var haveProgramTypeMatrix = internal.FeatureMatrix[ebpf.ProgramType]{
 			}
 
 			// create target prog
-			prog, err := ebpf.NewProgramWithOptions(
-				&ebpf.ProgramSpec{
-					Type:         ebpf.XDP,
+			prog, err := gbpf.NewProgramWithOptions(
+				&gbpf.ProgramSpec{
+					Type:         gbpf.XDP,
 					Instructions: insns,
 				},
-				ebpf.ProgramOptions{
+				gbpf.ProgramOptions{
 					LogDisabled: true,
 				},
 			)
@@ -149,39 +152,39 @@ var haveProgramTypeMatrix = internal.FeatureMatrix[ebpf.ProgramType]{
 			defer prog.Close()
 
 			// probe for Extension prog with target
-			return probeProgram(&ebpf.ProgramSpec{
-				Type:         ebpf.Extension,
+			return probeProgram(&gbpf.ProgramSpec{
+				Type:         gbpf.Extension,
 				Instructions: insns,
 				AttachTarget: prog,
 				AttachTo:     btfFn.Name,
 			})
 		},
 	},
-	ebpf.LSM: {
+	gbpf.LSM: {
 		Version: "5.7",
 		Fn: func() error {
-			return probeProgram(&ebpf.ProgramSpec{
-				Type:       ebpf.LSM,
-				AttachType: ebpf.AttachLSMMac,
+			return probeProgram(&gbpf.ProgramSpec{
+				Type:       gbpf.LSM,
+				AttachType: gbpf.AttachLSMMac,
 				AttachTo:   "file_mprotect",
 				License:    "GPL",
 			})
 		},
 	},
-	ebpf.SkLookup: {
+	gbpf.SkLookup: {
 		Version: "5.9",
 		Fn: func() error {
-			return probeProgram(&ebpf.ProgramSpec{
-				Type:       ebpf.SkLookup,
-				AttachType: ebpf.AttachSkLookup,
+			return probeProgram(&gbpf.ProgramSpec{
+				Type:       gbpf.SkLookup,
+				AttachType: gbpf.AttachSkLookup,
 			})
 		},
 	},
-	ebpf.Syscall: {
+	gbpf.Syscall: {
 		Version: "5.14",
 		Fn: func() error {
-			return probeProgram(&ebpf.ProgramSpec{
-				Type:  ebpf.Syscall,
+			return probeProgram(&gbpf.ProgramSpec{
+				Type:  gbpf.Syscall,
 				Flags: unix.BPF_F_SLEEPABLE,
 			})
 		},
@@ -193,13 +196,13 @@ func init() {
 		ft.Name = key.String()
 		if ft.Fn == nil {
 			key := key // avoid the dreaded loop variable problem
-			ft.Fn = func() error { return probeProgram(&ebpf.ProgramSpec{Type: key}) }
+			ft.Fn = func() error { return probeProgram(&gbpf.ProgramSpec{Type: key}) }
 		}
 	}
 }
 
 type helperKey struct {
-	typ    ebpf.ProgramType
+	typ    gbpf.ProgramType
 	helper asm.BuiltinFunc
 }
 
@@ -217,15 +220,15 @@ var helperCache = internal.NewFeatureCache(func(key helperKey) *internal.Feature
 // Return values have the following semantics:
 //
 //	err == nil: The feature is available.
-//	errors.Is(err, ebpf.ErrNotSupported): The feature is not available.
+//	errors.Is(err, gbpf.ErrNotSupported): The feature is not available.
 //	err != nil: Any errors encountered during probe execution, wrapped.
 //
 // Note that the latter case may include false negatives, and that program creation may
 // succeed despite an error being returned.
-// Only `nil` and `ebpf.ErrNotSupported` are conclusive.
+// Only `nil` and `gbpf.ErrNotSupported` are conclusive.
 //
 // Probe results are cached and persist throughout any process capability changes.
-func HaveProgramHelper(pt ebpf.ProgramType, helper asm.BuiltinFunc) error {
+func HaveProgramHelper(pt gbpf.ProgramType, helper asm.BuiltinFunc) error {
 	if helper > helper.Max() {
 		return os.ErrInvalid
 	}
@@ -233,7 +236,7 @@ func HaveProgramHelper(pt ebpf.ProgramType, helper asm.BuiltinFunc) error {
 	return helperCache.Result(helperKey{pt, helper})
 }
 
-func haveProgramHelper(pt ebpf.ProgramType, helper asm.BuiltinFunc) error {
+func haveProgramHelper(pt gbpf.ProgramType, helper asm.BuiltinFunc) error {
 	if ok := helperProbeNotImplemented(pt); ok {
 		return fmt.Errorf("no feature probe for %v/%v", pt, helper)
 	}
@@ -242,7 +245,7 @@ func haveProgramHelper(pt ebpf.ProgramType, helper asm.BuiltinFunc) error {
 		return err
 	}
 
-	spec := &ebpf.ProgramSpec{
+	spec := &gbpf.ProgramSpec{
 		Type: pt,
 		Instructions: asm.Instructions{
 			helper.Call(),
@@ -253,17 +256,17 @@ func haveProgramHelper(pt ebpf.ProgramType, helper asm.BuiltinFunc) error {
 	}
 
 	switch pt {
-	case ebpf.CGroupSockAddr:
-		spec.AttachType = ebpf.AttachCGroupInet4Connect
-	case ebpf.CGroupSockopt:
-		spec.AttachType = ebpf.AttachCGroupGetsockopt
-	case ebpf.SkLookup:
-		spec.AttachType = ebpf.AttachSkLookup
-	case ebpf.Syscall:
+	case gbpf.CGroupSockAddr:
+		spec.AttachType = gbpf.AttachCGroupInet4Connect
+	case gbpf.CGroupSockopt:
+		spec.AttachType = gbpf.AttachCGroupGetsockopt
+	case gbpf.SkLookup:
+		spec.AttachType = gbpf.AttachSkLookup
+	case gbpf.Syscall:
 		spec.Flags = unix.BPF_F_SLEEPABLE
 	}
 
-	prog, err := ebpf.NewProgramWithOptions(spec, ebpf.ProgramOptions{
+	prog, err := gbpf.NewProgramWithOptions(spec, gbpf.ProgramOptions{
 		LogDisabled: true,
 	})
 	if err == nil {
@@ -282,15 +285,15 @@ func haveProgramHelper(pt ebpf.ProgramType, helper asm.BuiltinFunc) error {
 	// EINVAL occurs when attempting to create a program with an unknown helper.
 	case errors.Is(err, unix.EINVAL):
 		// TODO: possibly we need to check verifier output here to be sure
-		err = ebpf.ErrNotSupported
+		err = gbpf.ErrNotSupported
 	}
 
 	return err
 }
 
-func helperProbeNotImplemented(pt ebpf.ProgramType) bool {
+func helperProbeNotImplemented(pt gbpf.ProgramType) bool {
 	switch pt {
-	case ebpf.Extension, ebpf.LSM, ebpf.StructOps, ebpf.Tracing:
+	case gbpf.Extension, gbpf.LSM, gbpf.StructOps, gbpf.Tracing:
 		return true
 	}
 	return false

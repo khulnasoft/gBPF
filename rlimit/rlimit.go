@@ -89,7 +89,7 @@ func detectMemcgAccounting() error {
 // RemoveMemlock removes the limit on the amount of memory the current
 // process can lock into RAM, if necessary.
 //
-// This is not required to load eBPF resources on kernel versions 5.11+
+// This is not required to load gBPF resources on kernel versions 5.11+
 // due to the introduction of cgroup-based memory accounting. On such kernels
 // the function is a no-op.
 //

@@ -1,5 +1,5 @@
-// This program demonstrates attaching an eBPF program to a kernel symbol.
-// The eBPF program will be attached to the start of the sys_execve
+// This program demonstrates attaching an gBPF program to a kernel symbol.
+// The gBPF program will be attached to the start of the sys_execve
 // kernel function and prints out the number of times it has been called
 // every second.
 package main
@@ -15,7 +15,7 @@ import (
 	"github.com/khulnasoft/gbpf/rlimit"
 )
 
-//go:generate go run github.com/khulnasoft/gbpf/cmd/gbpf bpf kprobe_pin.c -- -I../headers
+//go:generate go run github.com/khulnasoft/gbpf/cmd/bpf2go bpf kprobe_pin.c -- -I../headers
 
 const (
 	mapKey    uint32 = 0
@@ -27,7 +27,7 @@ func main() {
 	// Name of the kernel function to trace.
 	fn := "sys_execve"
 
-	// Allow the current process to lock memory for eBPF resources.
+	// Allow the current process to lock memory for gBPF resources.
 	if err := rlimit.RemoveMemlock(); err != nil {
 		log.Fatal(err)
 	}
@@ -38,8 +38,8 @@ func main() {
 	}
 
 	var objs bpfObjects
-	if err := loadBpfObjects(&objs, &ebpf.CollectionOptions{
-		Maps: ebpf.MapOptions{
+	if err := loadBpfObjects(&objs, &gbpf.CollectionOptions{
+		Maps: gbpf.MapOptions{
 			// Pin the map to the BPF filesystem and configure the
 			// library to automatically re-write it in the BPF
 			// program so it can be re-used if it already exists or

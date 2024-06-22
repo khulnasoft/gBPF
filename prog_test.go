@@ -1,4 +1,4 @@
-package ebpf
+package gbpf
 
 import (
 	"bytes"
@@ -9,12 +9,13 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
-	qt "github.com/frankban/quicktest"
+	"github.com/go-quicktest/qt"
 
 	"github.com/khulnasoft/gbpf/asm"
 	"github.com/khulnasoft/gbpf/btf"
@@ -133,6 +134,37 @@ func TestProgramRunWithOptions(t *testing.T) {
 
 	if xdp != xdpOut {
 		t.Errorf("Expect xdp (%+v) == xdpOut (%+v)", xdp, xdpOut)
+	}
+}
+
+func TestProgramRunRawTracepoint(t *testing.T) {
+	testutils.SkipOnOldKernel(t, "5.10", "RawTracepoint test run")
+
+	ins := asm.Instructions{
+		// Return 0
+		asm.LoadImm(asm.R0, 0, asm.DWord),
+		asm.Return(),
+	}
+
+	prog, err := NewProgram(&ProgramSpec{
+		Name:         "test",
+		Type:         RawTracepoint,
+		Instructions: ins,
+		License:      "MIT",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer prog.Close()
+
+	ret, err := prog.Run(&RunOptions{})
+	testutils.SkipIfNotSupported(t, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if ret != 0 {
+		t.Error("Expected return value to be 0, got", ret)
 	}
 }
 
@@ -273,7 +305,6 @@ func TestProgramClose(t *testing.T) {
 
 func TestProgramPin(t *testing.T) {
 	prog := mustSocketFilter(t)
-	c := qt.New(t)
 
 	tmp := testutils.TempBPFFS(t)
 
@@ -283,7 +314,7 @@ func TestProgramPin(t *testing.T) {
 	}
 
 	pinned := prog.IsPinned()
-	c.Assert(pinned, qt.IsTrue)
+	qt.Assert(t, qt.IsTrue(pinned))
 
 	prog.Close()
 
@@ -315,7 +346,6 @@ func TestProgramPin(t *testing.T) {
 
 func TestProgramUnpin(t *testing.T) {
 	prog := mustSocketFilter(t)
-	c := qt.New(t)
 
 	tmp := testutils.TempBPFFS(t)
 
@@ -325,7 +355,7 @@ func TestProgramUnpin(t *testing.T) {
 	}
 
 	pinned := prog.IsPinned()
-	c.Assert(pinned, qt.IsTrue)
+	qt.Assert(t, qt.IsTrue(pinned))
 
 	if err := prog.Unpin(); err != nil {
 		t.Fatal("Failed to unpin program:", err)
@@ -446,6 +476,8 @@ func TestProgramVerifierLogTruncated(t *testing.T) {
 	logSize := 128
 
 	check := func(t *testing.T, err error) {
+		t.Helper()
+
 		if err == nil {
 			t.Fatal("Expected an error")
 		}
@@ -461,26 +493,18 @@ func TestProgramVerifierLogTruncated(t *testing.T) {
 	// Generate a base program of sufficient size whose verifier log does not fit
 	// a 128-byte buffer. This should always result in ENOSPC, setting the
 	// VerifierError.Truncated flag.
-	base := func() (out asm.Instructions) {
-		for i := 0; i < 32; i++ {
-			out = append(out, asm.Mov.Reg(asm.R0, asm.R1))
-		}
-		return
-	}()
+	var base asm.Instructions
+	for i := 0; i < 32; i++ {
+		base = append(base, asm.Mov.Reg(asm.R0, asm.R1))
+	}
 
-	invalid := func() (out asm.Instructions) {
-		out = base
-		// Touch R10 (read-only frame pointer) to reliably force a verifier error.
-		out = append(out, asm.Mov.Reg(asm.R10, asm.R0))
-		out = append(out, asm.Return())
-		return
-	}()
+	// Touch R10 (read-only frame pointer) to reliably force a verifier error.
+	invalid := slices.Clone(base)
+	invalid = append(invalid, asm.Mov.Reg(asm.R10, asm.R0))
+	invalid = append(invalid, asm.Return())
 
-	valid := func() (out asm.Instructions) {
-		out = base
-		out = append(out, asm.Return())
-		return
-	}()
+	valid := slices.Clone(base)
+	valid = append(valid, asm.Return())
 
 	// Start out with testing against the invalid program.
 	spec := &ProgramSpec{
@@ -649,7 +673,7 @@ func TestProgramGetNextID(t *testing.T) {
 	// Ensure there is at least one program loaded
 	_ = mustSocketFilter(t)
 
-	// As there can be multiple eBPF programs, we loop over all of them and
+	// As there can be multiple gBPF programs, we loop over all of them and
 	// make sure, the IDs increase and the last call will return ErrNotExist
 	last := ProgramID(0)
 	for {
@@ -925,6 +949,61 @@ func TestProgramInstructions(t *testing.T) {
 
 	if tag != tagXlated {
 		t.Fatalf("tag %s differs from xlated instructions tag %s", tag, tagXlated)
+	}
+}
+
+func TestProgramLoadErrors(t *testing.T) {
+	testutils.SkipOnOldKernel(t, "4.10", "stable verifier log output")
+
+	spec, err := LoadCollectionSpec(testutils.NativeFile(t, "testdata/errors-%s.elf"))
+	qt.Assert(t, qt.IsNil(err))
+
+	var b btf.Builder
+	raw, err := b.Marshal(nil, nil)
+	qt.Assert(t, qt.IsNil(err))
+	empty, err := btf.LoadSpecFromReader(bytes.NewReader(raw))
+	qt.Assert(t, qt.IsNil(err))
+
+	for _, test := range []struct {
+		name string
+		want error
+	}{
+		{"poisoned_single", errBadRelocation},
+		{"poisoned_double", errBadRelocation},
+		{"poisoned_kfunc", errUnknownKfunc},
+	} {
+		progSpec := spec.Programs[test.name]
+		qt.Assert(t, qt.IsNotNil(progSpec))
+
+		t.Run(test.name, func(t *testing.T) {
+			t.Log(progSpec.Instructions)
+			_, err := NewProgramWithOptions(progSpec, ProgramOptions{
+				KernelTypes: empty,
+			})
+			testutils.SkipIfNotSupported(t, err)
+
+			qt.Assert(t, qt.ErrorIs(err, test.want))
+
+			var ve *VerifierError
+			qt.Assert(t, qt.ErrorAs(err, &ve))
+			t.Logf("%-5v", ve)
+		})
+	}
+}
+
+func BenchmarkNewProgram(b *testing.B) {
+	testutils.SkipOnOldKernel(b, "5.18", "kfunc support")
+	spec, err := LoadCollectionSpec(testutils.NativeFile(b, "testdata/kfunc-%s.elf"))
+	qt.Assert(b, qt.IsNil(err))
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		_, err := NewProgram(spec.Programs["benchmark"])
+		if !errors.Is(err, unix.EACCES) {
+			b.Fatal("Unexpected error:", err)
+		}
 	}
 }
 

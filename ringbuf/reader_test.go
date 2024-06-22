@@ -7,13 +7,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/khulnasoft/gbpf"
 	"github.com/khulnasoft/gbpf/asm"
 	"github.com/khulnasoft/gbpf/internal"
 	"github.com/khulnasoft/gbpf/internal/testutils"
 	"github.com/khulnasoft/gbpf/internal/testutils/fdtrace"
 	"github.com/khulnasoft/gbpf/internal/unix"
-	"github.com/google/go-cmp/cmp"
 )
 
 type sampleMessage struct {
@@ -59,6 +59,10 @@ func TestRingbufReader(t *testing.T) {
 			}
 			defer rd.Close()
 
+			if uint32(rd.BufferSize()) != 2*events.MaxEntries() {
+				t.Errorf("expected %d BufferSize, got %d", events.MaxEntries(), rd.BufferSize())
+			}
+
 			ret, _, err := prog.Test(internal.EmptyBPFContext)
 			testutils.SkipIfNotSupported(t, err)
 			if err != nil {
@@ -77,6 +81,15 @@ func TestRingbufReader(t *testing.T) {
 					t.Fatal("Can't read samples:", err)
 				}
 				raw[len(record.RawSample)] = record.RawSample
+				if len(raw) == len(tt.want) {
+					if record.Remaining != 0 {
+						t.Errorf("expected 0 Remaining, got %d", record.Remaining)
+					}
+				} else {
+					if record.Remaining == 0 {
+						t.Error("expected non-zero Remaining, got 0")
+					}
+				}
 			}
 
 			if diff := cmp.Diff(tt.want, raw); diff != "" {
@@ -86,9 +99,9 @@ func TestRingbufReader(t *testing.T) {
 	}
 }
 
-func outputSamplesProg(sampleMessages ...sampleMessage) (*ebpf.Program, *ebpf.Map, error) {
-	events, err := ebpf.NewMap(&ebpf.MapSpec{
-		Type:       ebpf.RingBuf,
+func outputSamplesProg(sampleMessages ...sampleMessage) (*gbpf.Program, *gbpf.Map, error) {
+	events, err := gbpf.NewMap(&gbpf.MapSpec{
+		Type:       gbpf.RingBuf,
 		MaxEntries: 4096,
 	})
 	if err != nil {
@@ -151,9 +164,9 @@ func outputSamplesProg(sampleMessages ...sampleMessage) (*ebpf.Program, *ebpf.Ma
 		asm.Return(),
 	)
 
-	prog, err := ebpf.NewProgram(&ebpf.ProgramSpec{
+	prog, err := gbpf.NewProgram(&gbpf.ProgramSpec{
 		License:      "MIT",
-		Type:         ebpf.XDP,
+		Type:         gbpf.XDP,
 		Instructions: insns,
 	})
 	if err != nil {
@@ -164,7 +177,7 @@ func outputSamplesProg(sampleMessages ...sampleMessage) (*ebpf.Program, *ebpf.Ma
 	return prog, events, nil
 }
 
-func mustOutputSamplesProg(tb testing.TB, sampleMessages ...sampleMessage) (*ebpf.Program, *ebpf.Map) {
+func mustOutputSamplesProg(tb testing.TB, sampleMessages ...sampleMessage) (*gbpf.Program, *gbpf.Map) {
 	tb.Helper()
 
 	prog, events, err := outputSamplesProg(sampleMessages...)

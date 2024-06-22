@@ -1,5 +1,5 @@
-// This program demonstrates attaching an eBPF program to a control group.
-// The eBPF program will be attached as an egress filter,
+// This program demonstrates attaching an gBPF program to a control group.
+// The gBPF program will be attached as an egress filter,
 // receiving an `__sk_buff` pointer for each outgoing packet.
 // It prints the count of total packets every second.
 package main
@@ -17,10 +17,10 @@ import (
 	"github.com/khulnasoft/gbpf/rlimit"
 )
 
-//go:generate go run github.com/khulnasoft/gbpf/cmd/gbpf bpf cgroup_skb.c -- -I../headers
+//go:generate go run github.com/khulnasoft/gbpf/cmd/bpf2go bpf cgroup_skb.c -- -I../headers
 
 func main() {
-	// Allow the current process to lock memory for eBPF resources.
+	// Allow the current process to lock memory for gBPF resources.
 	if err := rlimit.RemoveMemlock(); err != nil {
 		log.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func main() {
 	// Link the count_egress_packets program to the cgroup.
 	l, err := link.AttachCgroup(link.CgroupOptions{
 		Path:    cgroupPath,
-		Attach:  ebpf.AttachCGroupInetEgress,
+		Attach:  gbpf.AttachCGroupInetEgress,
 		Program: objs.CountEgressPackets,
 	})
 	if err != nil {

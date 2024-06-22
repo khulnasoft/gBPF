@@ -36,10 +36,10 @@ var (
 type Executable struct {
 	// Path of the executable on the filesystem.
 	path string
-	// Parsed ELF and dynamic symbols' addresses.
-	addresses map[string]uint64
+	// Parsed ELF and dynamic symbols' cachedAddresses.
+	cachedAddresses map[string]uint64
 	// Keep track of symbol table lazy load.
-	addressesOnce sync.Once
+	cacheAddressesOnce sync.Once
 }
 
 // UprobeOptions defines additional parameters that will be used
@@ -68,14 +68,14 @@ type UprobeOptions struct {
 	// github.com/torvalds/linux/commit/1cc33161a83d
 	// github.com/torvalds/linux/commit/a6ca88b241d5
 	RefCtrOffset uint64
-	// Arbitrary value that can be fetched from an eBPF program
+	// Arbitrary value that can be fetched from an gBPF program
 	// via `bpf_get_attach_cookie()`.
 	//
 	// Needs kernel 5.15+.
 	Cookie uint64
 	// Prefix used for the event name if the uprobe must be attached using tracefs.
 	// The group name will be formatted as `<prefix>_<randomstr>`.
-	// The default empty string is equivalent to "ebpf" as the prefix.
+	// The default empty string is equivalent to "gbpf" as the prefix.
 	TraceFSPrefix string
 }
 
@@ -108,8 +108,8 @@ func OpenExecutable(path string) (*Executable, error) {
 	}
 
 	return &Executable{
-		path:      path,
-		addresses: make(map[string]uint64),
+		path:            path,
+		cachedAddresses: make(map[string]uint64),
 	}, nil
 }
 
@@ -153,7 +153,7 @@ func (ex *Executable) load(f *internal.SafeELFFile) error {
 			}
 		}
 
-		ex.addresses[s.Name] = address
+		ex.cachedAddresses[s.Name] = address
 	}
 
 	return nil
@@ -162,13 +162,13 @@ func (ex *Executable) load(f *internal.SafeELFFile) error {
 // address calculates the address of a symbol in the executable.
 //
 // opts must not be nil.
-func (ex *Executable) address(symbol string, opts *UprobeOptions) (uint64, error) {
-	if opts.Address > 0 {
-		return opts.Address + opts.Offset, nil
+func (ex *Executable) address(symbol string, address, offset uint64) (uint64, error) {
+	if address > 0 {
+		return address + offset, nil
 	}
 
 	var err error
-	ex.addressesOnce.Do(func() {
+	ex.cacheAddressesOnce.Do(func() {
 		var f *internal.SafeELFFile
 		f, err = internal.OpenSafeELFFile(ex.path)
 		if err != nil {
@@ -183,7 +183,7 @@ func (ex *Executable) address(symbol string, opts *UprobeOptions) (uint64, error
 		return 0, fmt.Errorf("lazy load symbols: %w", err)
 	}
 
-	address, ok := ex.addresses[symbol]
+	address, ok := ex.cachedAddresses[symbol]
 	if !ok {
 		return 0, fmt.Errorf("symbol %s: %w", symbol, ErrNoSymbol)
 	}
@@ -199,10 +199,10 @@ func (ex *Executable) address(symbol string, opts *UprobeOptions) (uint64, error
 			"(consider providing UprobeOptions.Address)", ex.path, symbol, ErrNotSupported)
 	}
 
-	return address + opts.Offset, nil
+	return address + offset, nil
 }
 
-// Uprobe attaches the given eBPF program to a perf event that fires when the
+// Uprobe attaches the given gBPF program to a perf event that fires when the
 // given symbol starts executing in the given Executable.
 // For example, /bin/bash::main():
 //
@@ -222,7 +222,9 @@ func (ex *Executable) address(symbol string, opts *UprobeOptions) (uint64, error
 //
 // Functions provided by shared libraries can currently not be traced and
 // will result in an ErrNotSupported.
-func (ex *Executable) Uprobe(symbol string, prog *ebpf.Program, opts *UprobeOptions) (Link, error) {
+//
+// The returned Link may implement [PerfEvent].
+func (ex *Executable) Uprobe(symbol string, prog *gbpf.Program, opts *UprobeOptions) (Link, error) {
 	u, err := ex.uprobe(symbol, prog, opts, false)
 	if err != nil {
 		return nil, err
@@ -237,7 +239,7 @@ func (ex *Executable) Uprobe(symbol string, prog *ebpf.Program, opts *UprobeOpti
 	return lnk, nil
 }
 
-// Uretprobe attaches the given eBPF program to a perf event that fires right
+// Uretprobe attaches the given gBPF program to a perf event that fires right
 // before the given symbol exits. For example, /bin/bash::main():
 //
 //	ex, _ = OpenExecutable("/bin/bash")
@@ -256,7 +258,9 @@ func (ex *Executable) Uprobe(symbol string, prog *ebpf.Program, opts *UprobeOpti
 //
 // Functions provided by shared libraries can currently not be traced and
 // will result in an ErrNotSupported.
-func (ex *Executable) Uretprobe(symbol string, prog *ebpf.Program, opts *UprobeOptions) (Link, error) {
+//
+// The returned Link may implement [PerfEvent].
+func (ex *Executable) Uretprobe(symbol string, prog *gbpf.Program, opts *UprobeOptions) (Link, error) {
 	u, err := ex.uprobe(symbol, prog, opts, true)
 	if err != nil {
 		return nil, err
@@ -273,18 +277,18 @@ func (ex *Executable) Uretprobe(symbol string, prog *ebpf.Program, opts *UprobeO
 
 // uprobe opens a perf event for the given binary/symbol and attaches prog to it.
 // If ret is true, create a uretprobe.
-func (ex *Executable) uprobe(symbol string, prog *ebpf.Program, opts *UprobeOptions, ret bool) (*perfEvent, error) {
+func (ex *Executable) uprobe(symbol string, prog *gbpf.Program, opts *UprobeOptions, ret bool) (*perfEvent, error) {
 	if prog == nil {
 		return nil, fmt.Errorf("prog cannot be nil: %w", errInvalidInput)
 	}
-	if prog.Type() != ebpf.Kprobe {
-		return nil, fmt.Errorf("eBPF program type %s is not Kprobe: %w", prog.Type(), errInvalidInput)
+	if prog.Type() != gbpf.Kprobe {
+		return nil, fmt.Errorf("gBPF program type %s is not Kprobe: %w", prog.Type(), errInvalidInput)
 	}
 	if opts == nil {
 		opts = &UprobeOptions{}
 	}
 
-	offset, err := ex.address(symbol, opts)
+	offset, err := ex.address(symbol, opts.Address, opts.Offset)
 	if err != nil {
 		return nil, err
 	}

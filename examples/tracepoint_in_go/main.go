@@ -1,4 +1,4 @@
-// This program demonstrates how to attach an eBPF program to a tracepoint.
+// This program demonstrates how to attach an gBPF program to a tracepoint.
 // The program is attached to the syscall/sys_enter_openat tracepoint and
 // prints out the integer 123 every time the syscall is entered.
 package main
@@ -17,10 +17,10 @@ import (
 	"github.com/khulnasoft/gbpf/rlimit"
 )
 
-// Metadata for the eBPF program used in this example.
-var progSpec = &ebpf.ProgramSpec{
+// Metadata for the gBPF program used in this example.
+var progSpec = &gbpf.ProgramSpec{
 	Name:    "my_trace_prog", // non-unique name, will appear in `bpftool prog list` while attached
-	Type:    ebpf.TracePoint, // only TracePoint programs can be attached to trace events created by link.Tracepoint()
+	Type:    gbpf.TracePoint, // only TracePoint programs can be attached to trace events created by link.Tracepoint()
 	License: "GPL",           // license must be GPL for calling kernel helpers like perf_event_output
 }
 
@@ -30,15 +30,15 @@ func main() {
 	stopper := make(chan os.Signal, 1)
 	signal.Notify(stopper, os.Interrupt, syscall.SIGTERM)
 
-	// Allow the current process to lock memory for eBPF resources.
+	// Allow the current process to lock memory for gBPF resources.
 	if err := rlimit.RemoveMemlock(); err != nil {
 		log.Fatal(err)
 	}
 
 	// Create a perf event array for the kernel to write perf records to.
 	// These records will be read by userspace below.
-	events, err := ebpf.NewMap(&ebpf.MapSpec{
-		Type: ebpf.PerfEventArray,
+	events, err := gbpf.NewMap(&gbpf.MapSpec{
+		Type: gbpf.PerfEventArray,
 		Name: "my_perf_array",
 	})
 	if err != nil {
@@ -77,7 +77,7 @@ func main() {
 		asm.Add.Imm(asm.R4, -8),
 		asm.Mov.Imm(asm.R5, 4),
 
-		// call FnPerfEventOutput, an eBPF kernel helper
+		// call FnPerfEventOutput, an gBPF kernel helper
 		asm.FnPerfEventOutput.Call(),
 
 		// set exit code to 0
@@ -86,14 +86,14 @@ func main() {
 	}
 
 	// Instantiate and insert the program into the kernel.
-	prog, err := ebpf.NewProgram(progSpec)
+	prog, err := gbpf.NewProgram(progSpec)
 	if err != nil {
-		log.Fatalf("creating ebpf program: %s", err)
+		log.Fatalf("creating gbpf program: %s", err)
 	}
 	defer prog.Close()
 
 	// Open a trace event based on a pre-existing kernel hook (tracepoint).
-	// Each time a userspace program uses the 'openat()' syscall, the eBPF
+	// Each time a userspace program uses the 'openat()' syscall, the gBPF
 	// program specified above will be executed and a '123' value will appear
 	// in the perf ring.
 	tp, err := link.Tracepoint("syscalls", "sys_enter_openat", prog, nil)

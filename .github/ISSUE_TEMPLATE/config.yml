@@ -1,0 +1,7 @@
+contact_links:
+  - name: Questions
+    url: https://github.com/khulnasoft/gbpf/discussions/categories/q-a
+    about: Please ask and answer questions here.
+  - name: Slack
+    url: https://khulnasoft.slack.com/messages/gbpf-go
+    about: Join our slack.

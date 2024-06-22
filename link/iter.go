@@ -16,11 +16,11 @@ type IterOptions struct {
 	//
 	// AttachTo requires the kernel to include BTF of itself,
 	// and it to be compiled with a recent pahole (>= 1.16).
-	Program *ebpf.Program
+	Program *gbpf.Program
 
 	// Map specifies the target map for bpf_map_elem and sockmap iterators.
 	// It may be nil.
-	Map *ebpf.Map
+	Map *gbpf.Map
 }
 
 // AttachIter attaches a BPF seq_file iterator.
@@ -41,14 +41,14 @@ func AttachIter(opts IterOptions) (*Iter, error) {
 
 	attr := sys.LinkCreateIterAttr{
 		ProgFd:      uint32(progFd),
-		AttachType:  sys.AttachType(ebpf.AttachTraceIter),
+		AttachType:  sys.AttachType(gbpf.AttachTraceIter),
 		IterInfo:    sys.NewPointer(unsafe.Pointer(&info)),
 		IterInfoLen: uint32(unsafe.Sizeof(info)),
 	}
 
 	fd, err := sys.LinkCreateIter(&attr)
 	if err != nil {
-		if haveFeatErr := haveBPFLink(); haveFeatErr != nil {
+		if haveFeatErr := havgBPFLink(); haveFeatErr != nil {
 			return nil, haveFeatErr
 		}
 		return nil, fmt.Errorf("can't link iterator: %w", err)

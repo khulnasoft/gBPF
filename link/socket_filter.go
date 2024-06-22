@@ -8,7 +8,7 @@ import (
 )
 
 // AttachSocketFilter attaches a SocketFilter BPF program to a socket.
-func AttachSocketFilter(conn syscall.Conn, program *ebpf.Program) error {
+func AttachSocketFilter(conn syscall.Conn, program *gbpf.Program) error {
 	rawConn, err := conn.SyscallConn()
 	if err != nil {
 		return err

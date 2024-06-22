@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	qt "github.com/frankban/quicktest"
+	"github.com/go-quicktest/qt"
 )
 
 func TestStringTable(t *testing.T) {
@@ -15,15 +15,6 @@ func TestStringTable(t *testing.T) {
 	st, err := readStringTable(strings.NewReader(in), nil)
 	if err != nil {
 		t.Fatal(err)
-	}
-
-	var buf bytes.Buffer
-	if err := st.Marshal(&buf); err != nil {
-		t.Fatal("Can't marshal string table:", err)
-	}
-
-	if !bytes.Equal([]byte(in), buf.Bytes()) {
-		t.Error("String table doesn't match input")
 	}
 
 	// Parse string table of split BTF
@@ -75,18 +66,18 @@ func TestStringTableBuilder(t *testing.T) {
 	stb := newStringTableBuilder(0)
 
 	_, err := readStringTable(bytes.NewReader(stb.AppendEncoded(nil)), nil)
-	qt.Assert(t, err, qt.IsNil, qt.Commentf("Can't parse string table"))
+	qt.Assert(t, qt.IsNil(err), qt.Commentf("Can't parse string table"))
 
 	_, err = stb.Add("foo\x00bar")
-	qt.Assert(t, err, qt.IsNotNil)
+	qt.Assert(t, qt.IsNotNil(err))
 
 	empty, err := stb.Add("")
-	qt.Assert(t, err, qt.IsNil)
-	qt.Assert(t, empty, qt.Equals, uint32(0), qt.Commentf("The empty string is not at index 0"))
+	qt.Assert(t, qt.IsNil(err))
+	qt.Assert(t, qt.Equals(empty, 0), qt.Commentf("The empty string is not at index 0"))
 
 	foo1, _ := stb.Add("foo")
 	foo2, _ := stb.Add("foo")
-	qt.Assert(t, foo1, qt.Equals, foo2, qt.Commentf("Adding the same string returns different offsets"))
+	qt.Assert(t, qt.Equals(foo1, foo2), qt.Commentf("Adding the same string returns different offsets"))
 
 	table := stb.AppendEncoded(nil)
 	if n := bytes.Count(table, []byte("foo")); n != 1 {
@@ -94,7 +85,22 @@ func TestStringTableBuilder(t *testing.T) {
 	}
 
 	_, err = readStringTable(bytes.NewReader(table), nil)
-	qt.Assert(t, err, qt.IsNil, qt.Commentf("Can't parse string table"))
+	qt.Assert(t, qt.IsNil(err), qt.Commentf("Can't parse string table"))
+}
+
+func BenchmarkStringTableZeroLookup(b *testing.B) {
+	strings := vmlinuxTestdataSpec(b).strings
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		s, err := strings.Lookup(0)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if s != "" {
+			b.Fatal("0 is not the empty string")
+		}
+	}
 }
 
 func newStringTable(strings ...string) *stringTable {
@@ -106,5 +112,5 @@ func newStringTable(strings ...string) *stringTable {
 		offset += uint32(len(str)) + 1 // account for NUL
 	}
 
-	return &stringTable{nil, offsets, strings}
+	return &stringTable{nil, offsets, 0, strings}
 }

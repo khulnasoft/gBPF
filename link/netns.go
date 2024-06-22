@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/khulnasoft/gbpf"
+	"github.com/khulnasoft/gbpf/internal/sys"
 )
 
 // NetNsLink is a program attached to a network namespace.
@@ -12,13 +13,13 @@ type NetNsLink struct {
 }
 
 // AttachNetNs attaches a program to a network namespace.
-func AttachNetNs(ns int, prog *ebpf.Program) (*NetNsLink, error) {
-	var attach ebpf.AttachType
+func AttachNetNs(ns int, prog *gbpf.Program) (*NetNsLink, error) {
+	var attach gbpf.AttachType
 	switch t := prog.Type(); t {
-	case ebpf.FlowDissector:
-		attach = ebpf.AttachFlowDissector
-	case ebpf.SkLookup:
-		attach = ebpf.AttachSkLookup
+	case gbpf.FlowDissector:
+		attach = gbpf.AttachFlowDissector
+	case gbpf.SkLookup:
+		attach = gbpf.AttachSkLookup
 	default:
 		return nil, fmt.Errorf("can't attach %v to network namespace", t)
 	}
@@ -33,4 +34,22 @@ func AttachNetNs(ns int, prog *ebpf.Program) (*NetNsLink, error) {
 	}
 
 	return &NetNsLink{*link}, nil
+}
+
+func (ns *NetNsLink) Info() (*Info, error) {
+	var info sys.NetNsLinkInfo
+	if err := sys.ObjInfo(ns.fd, &info); err != nil {
+		return nil, fmt.Errorf("netns link info: %s", err)
+	}
+	extra := &NetNsInfo{
+		NetnsIno:   info.NetnsIno,
+		AttachType: info.AttachType,
+	}
+
+	return &Info{
+		info.Type,
+		info.Id,
+		gbpf.ProgramID(info.ProgId),
+		extra,
+	}, nil
 }

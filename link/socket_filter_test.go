@@ -8,7 +8,7 @@ import (
 )
 
 func TestSocketFilterAttach(t *testing.T) {
-	prog := mustLoadProgram(t, ebpf.SocketFilter, 0, "")
+	prog := mustLoadProgram(t, gbpf.SocketFilter, 0, "")
 
 	defer prog.Close()
 

@@ -12,7 +12,7 @@ const IfIndexLO = 1
 func TestAttachXDP(t *testing.T) {
 	testutils.SkipOnOldKernel(t, "5.9", "BPF_LINK_TYPE_XDP")
 
-	prog := mustLoadProgram(t, ebpf.XDP, 0, "")
+	prog := mustLoadProgram(t, gbpf.XDP, 0, "")
 
 	l, err := AttachXDP(XDPOptions{
 		Program:   prog,

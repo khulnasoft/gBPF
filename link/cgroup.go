@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/khulnasoft/gbpf"
+	"github.com/khulnasoft/gbpf/internal/sys"
 )
 
 type cgroupAttachFlags uint32
@@ -26,9 +27,9 @@ type CgroupOptions struct {
 	// Path to a cgroupv2 folder.
 	Path string
 	// One of the AttachCgroup* constants
-	Attach ebpf.AttachType
+	Attach gbpf.AttachType
 	// Program must be of type CGroup*, and the attach type must match Attach.
-	Program *ebpf.Program
+	Program *gbpf.Program
 }
 
 // AttachCgroup links a BPF program to a cgroup.
@@ -73,8 +74,8 @@ func AttachCgroup(opts CgroupOptions) (cg Link, err error) {
 
 type progAttachCgroup struct {
 	cgroup     *os.File
-	current    *ebpf.Program
-	attachType ebpf.AttachType
+	current    *gbpf.Program
+	attachType gbpf.AttachType
 	flags      cgroupAttachFlags
 }
 
@@ -84,7 +85,7 @@ func (cg *progAttachCgroup) isLink() {}
 
 // newProgAttachCgroup attaches prog to cgroup using BPF_PROG_ATTACH.
 // cgroup and prog are retained by [progAttachCgroup].
-func newProgAttachCgroup(cgroup *os.File, attach ebpf.AttachType, prog *ebpf.Program, flags cgroupAttachFlags) (*progAttachCgroup, error) {
+func newProgAttachCgroup(cgroup *os.File, attach gbpf.AttachType, prog *gbpf.Program, flags cgroupAttachFlags) (*progAttachCgroup, error) {
 	if flags&flagAllowMulti > 0 {
 		if err := haveProgAttachReplace(); err != nil {
 			return nil, fmt.Errorf("can't support multiple programs: %w", err)
@@ -126,7 +127,7 @@ func (cg *progAttachCgroup) Close() error {
 	return nil
 }
 
-func (cg *progAttachCgroup) Update(prog *ebpf.Program) error {
+func (cg *progAttachCgroup) Update(prog *gbpf.Program) error {
 	new, err := prog.Clone()
 	if err != nil {
 		return err
@@ -143,8 +144,7 @@ func (cg *progAttachCgroup) Update(prog *ebpf.Program) error {
 		// Atomically replacing multiple programs requires at least
 		// 5.5 (commit 7dd68b3279f17921 "bpf: Support replacing cgroup-bpf
 		// program in MULTI mode")
-		args.Flags |= uint32(flagReplace)
-		args.Replace = cg.current
+		args.Anchor = ReplaceProgram(cg.current)
 	}
 
 	if err := RawAttachProgram(args); err != nil {
@@ -176,7 +176,7 @@ type linkCgroup struct {
 var _ Link = (*linkCgroup)(nil)
 
 // newLinkCgroup attaches prog to cgroup using BPF_LINK_CREATE.
-func newLinkCgroup(cgroup *os.File, attach ebpf.AttachType, prog *ebpf.Program) (*linkCgroup, error) {
+func newLinkCgroup(cgroup *os.File, attach gbpf.AttachType, prog *gbpf.Program) (*linkCgroup, error) {
 	link, err := AttachRawLink(RawLinkOptions{
 		Target:  int(cgroup.Fd()),
 		Program: prog,
@@ -187,4 +187,22 @@ func newLinkCgroup(cgroup *os.File, attach ebpf.AttachType, prog *ebpf.Program) 
 	}
 
 	return &linkCgroup{*link}, err
+}
+
+func (cg *linkCgroup) Info() (*Info, error) {
+	var info sys.CgroupLinkInfo
+	if err := sys.ObjInfo(cg.fd, &info); err != nil {
+		return nil, fmt.Errorf("cgroup link info: %s", err)
+	}
+	extra := &CgroupInfo{
+		CgroupId:   info.CgroupId,
+		AttachType: info.AttachType,
+	}
+
+	return &Info{
+		info.Type,
+		info.Id,
+		gbpf.ProgramID(info.ProgId),
+		extra,
+	}, nil
 }

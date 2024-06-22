@@ -11,7 +11,7 @@ import (
 func TempBPFFS(tb testing.TB) string {
 	tb.Helper()
 
-	tmp, err := os.MkdirTemp("/sys/fs/bpf", "ebpf-test")
+	tmp, err := os.MkdirTemp("/sys/fs/bpf", "gbpf-test")
 	if err != nil {
 		tb.Fatal("Create temporary directory on BPFFS:", err)
 	}

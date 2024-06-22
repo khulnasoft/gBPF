@@ -44,10 +44,12 @@ TARGETS := \
 	testdata/invalid-kfunc \
 	testdata/kfunc-kmod \
 	testdata/constants \
+	testdata/errors \
 	btf/testdata/relocs \
 	btf/testdata/relocs_read \
 	btf/testdata/relocs_read_tgt \
-	cmd/gbpf/testdata/minimal
+	btf/testdata/relocs_enum \
+	cmd/bpf2go/testdata/minimal
 
 .PHONY: all clean container-all container-shell generate
 
@@ -56,10 +58,10 @@ TARGETS := \
 # Build all ELF binaries using a containerized LLVM toolchain.
 container-all:
 	+${CONTAINER_ENGINE} run --rm -t ${CONTAINER_RUN_ARGS} \
-		-v "${REPODIR}":/ebpf -w /ebpf --env MAKEFLAGS \
+		-v "${REPODIR}":/gbpf -w /gbpf --env MAKEFLAGS \
 		--env HOME="/tmp" \
 		--env BPF2GO_CC="$(CLANG)" \
-		--env BPF2GO_FLAGS="-fdebug-prefix-map=/ebpf=. $(CFLAGS)" \
+		--env BPF2GO_FLAGS="-fdebug-prefix-map=/gbpf=. $(CFLAGS)" \
 		"${IMAGE}:${VERSION}" \
 		make all
 
@@ -67,9 +69,9 @@ container-all:
 # Set BPF2GO_ envs to make 'make generate' just work.
 container-shell:
 	${CONTAINER_ENGINE} run --rm -ti \
-		-v "${REPODIR}":/ebpf -w /ebpf \
+		-v "${REPODIR}":/gbpf -w /gbpf \
 		--env BPF2GO_CC="$(CLANG)" \
-		--env BPF2GO_FLAGS="-fdebug-prefix-map=/ebpf=. $(CFLAGS)" \
+		--env BPF2GO_FLAGS="-fdebug-prefix-map=/gbpf=. $(CFLAGS)" \
 		"${IMAGE}:${VERSION}"
 
 clean:
@@ -84,7 +86,8 @@ all: format $(addsuffix -el.elf,$(TARGETS)) $(addsuffix -eb.elf,$(TARGETS)) gene
 	ln -srf testdata/loader-$(CLANG)-eb.elf testdata/loader-eb.elf
 
 generate:
-	go generate ./...
+	go generate -run "internal/cmd/gentypes" ./...
+	go generate -skip "internal/cmd/gentypes" ./...
 
 testdata/loader-%-el.elf: testdata/loader.c
 	$* $(CFLAGS) -target bpfel -c $< -o $@
@@ -102,13 +105,8 @@ testdata/loader-%-eb.elf: testdata/loader.c
 	$(CLANG) $(CFLAGS) -target bpfeb -c $< -o $@
 	$(STRIP) -g $@
 
-.PHONY: generate-btf
-generate-btf: KERNEL_VERSION?=6.1.29
-generate-btf:
-	$(eval TMP := $(shell mktemp -d))
-	curl -fL "$(CI_KERNEL_URL)/linux-$(KERNEL_VERSION)-amd64.tgz" -o "$(TMP)/linux.tgz"
-	tar xvf "$(TMP)/linux.tgz" -C "$(TMP)" --strip-components=2 ./boot/vmlinuz ./lib/modules
-	/lib/modules/$(shell uname -r)/build/scripts/extract-vmlinux "$(TMP)/vmlinuz" > "$(TMP)/vmlinux"
-	$(OBJCOPY) --dump-section .BTF=/dev/stdout "$(TMP)/vmlinux" /dev/null | gzip > "btf/testdata/vmlinux.btf.gz"
-	find "$(TMP)/modules" -type f -name bpf_testmod.ko -exec $(OBJCOPY) --dump-section .BTF="btf/testdata/btf_testmod.btf" {} /dev/null \;
-	$(RM) -r "$(TMP)"
+.PHONY: update-kernel-deps
+update-kernel-deps: export KERNEL_VERSION?=6.8
+update-kernel-deps:
+	./testdata/sh/update-kernel-deps.sh
+	$(MAKE) container-all

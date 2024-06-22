@@ -12,7 +12,11 @@ import (
 // Upstream commit c04c0d2b968a ("bpf: increase complexity limit and maximum program size").
 //
 // See the package documentation for the meaning of the error return value.
-var HaveLargeInstructions = internal.NewFeatureTest(">4096 instructions", "5.2", func() error {
+func HaveLargeInstructions() error {
+	return haveLargeInstructions()
+}
+
+var haveLargeInstructions = internal.NewFeatureTest(">4096 instructions", "5.2", func() error {
 	const maxInsns = 4096
 
 	insns := make(asm.Instructions, maxInsns, maxInsns+1)
@@ -21,8 +25,8 @@ var HaveLargeInstructions = internal.NewFeatureTest(">4096 instructions", "5.2",
 	}
 	insns = append(insns, asm.Return())
 
-	return probeProgram(&ebpf.ProgramSpec{
-		Type:         ebpf.SocketFilter,
+	return probeProgram(&gbpf.ProgramSpec{
+		Type:         gbpf.SocketFilter,
 		Instructions: insns,
 	})
 })
@@ -32,9 +36,13 @@ var HaveLargeInstructions = internal.NewFeatureTest(">4096 instructions", "5.2",
 // Upstream commit 2589726d12a1 ("bpf: introduce bounded loops").
 //
 // See the package documentation for the meaning of the error return value.
-var HaveBoundedLoops = internal.NewFeatureTest("bounded loops", "5.3", func() error {
-	return probeProgram(&ebpf.ProgramSpec{
-		Type: ebpf.SocketFilter,
+func HaveBoundedLoops() error {
+	return haveBoundedLoops()
+}
+
+var haveBoundedLoops = internal.NewFeatureTest("bounded loops", "5.3", func() error {
+	return probeProgram(&gbpf.ProgramSpec{
+		Type: gbpf.SocketFilter,
 		Instructions: asm.Instructions{
 			asm.Mov.Imm(asm.R0, 10),
 			asm.Sub.Imm(asm.R0, 1).WithSymbol("loop"),
@@ -49,9 +57,13 @@ var HaveBoundedLoops = internal.NewFeatureTest("bounded loops", "5.3", func() er
 // Upstream commit 92b31a9af73b ("bpf: add BPF_J{LT,LE,SLT,SLE} instructions").
 //
 // See the package documentation for the meaning of the error return value.
-var HaveV2ISA = internal.NewFeatureTest("v2 ISA", "4.14", func() error {
-	return probeProgram(&ebpf.ProgramSpec{
-		Type: ebpf.SocketFilter,
+func HaveV2ISA() error {
+	return haveV2ISA()
+}
+
+var haveV2ISA = internal.NewFeatureTest("v2 ISA", "4.14", func() error {
+	return probeProgram(&gbpf.ProgramSpec{
+		Type: gbpf.SocketFilter,
 		Instructions: asm.Instructions{
 			asm.Mov.Imm(asm.R0, 0),
 			asm.JLT.Imm(asm.R0, 0, "exit"),
@@ -66,9 +78,13 @@ var HaveV2ISA = internal.NewFeatureTest("v2 ISA", "4.14", func() error {
 // Upstream commit 092ed0968bb6 ("bpf: verifier support JMP32").
 //
 // See the package documentation for the meaning of the error return value.
-var HaveV3ISA = internal.NewFeatureTest("v3 ISA", "5.1", func() error {
-	return probeProgram(&ebpf.ProgramSpec{
-		Type: ebpf.SocketFilter,
+func HaveV3ISA() error {
+	return haveV3ISA()
+}
+
+var haveV3ISA = internal.NewFeatureTest("v3 ISA", "5.1", func() error {
+	return probeProgram(&gbpf.ProgramSpec{
+		Type: gbpf.SocketFilter,
 		Instructions: asm.Instructions{
 			asm.Mov.Imm(asm.R0, 0),
 			asm.JLT.Imm32(asm.R0, 0, "exit"),

@@ -1,13 +1,15 @@
 #pragma once
 
 typedef _Bool bool;
+typedef unsigned char uint8_t;
 typedef unsigned short uint16_t;
 typedef unsigned int uint32_t;
+typedef signed int int32_t;
 typedef unsigned long uint64_t;
 
 enum libbpf_tristate {
-	TRI_NO = 0,
-	TRI_YES = 1,
+	TRI_NO     = 0,
+	TRI_YES    = 1,
 	TRI_MODULE = 2,
 };
 
@@ -18,6 +20,17 @@ enum libbpf_tristate {
 
 #define __kconfig __attribute__((section(".kconfig")))
 #define __ksym __attribute__((section(".ksyms")))
+#ifndef __weak
+#define __weak __attribute__((weak))
+#endif
+
+#define bpf_ksym_exists(sym) \
+	({ \
+		_Static_assert(!__builtin_constant_p(!!sym), #sym " should be marked as __weak"); \
+		!!sym; \
+	})
+
+#define core_access __builtin_preserve_access_index
 
 #define BPF_MAP_TYPE_HASH (1)
 #define BPF_MAP_TYPE_ARRAY (2)

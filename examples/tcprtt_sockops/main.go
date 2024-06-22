@@ -1,6 +1,6 @@
 //go:build linux
 
-// This program demonstrates attaching an eBPF program to
+// This program demonstrates attaching an gBPF program to
 // a cgroupv2 path and using sockops to process TCP socket events.
 // It prints the IPs/ports/RTT information every time TCP sockets
 // update their internal RTT value.
@@ -9,7 +9,7 @@
 // Sample output:
 //
 // examples# go run -exec sudo ./tcprtt_sockops
-// 2022/08/14 20:58:03 eBPF program loaded and attached on cgroup /sys/fs/cgroup/unified
+// 2022/08/14 20:58:03 gBPF program loaded and attached on cgroup /sys/fs/cgroup/unified
 // 2022/08/14 20:58:03 Src addr        Port   -> Dest addr       Port   RTT (ms)
 // 2022/08/14 20:58:09 10.0.1.205      54844  -> 20.42.73.25     443    67
 // 2022/08/14 20:58:09 10.0.1.205      54844  -> 20.42.73.25     443    67
@@ -32,7 +32,6 @@ import (
 	"syscall"
 
 	"github.com/khulnasoft/gbpf"
-	"github.com/khulnasoft/gbpf/internal"
 	"github.com/khulnasoft/gbpf/link"
 	"github.com/khulnasoft/gbpf/ringbuf"
 	"github.com/khulnasoft/gbpf/rlimit"
@@ -40,13 +39,13 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-//go:generate go run github.com/khulnasoft/gbpf/cmd/gbpf -tags "linux" -type rtt_event bpf tcprtt_sockops.c -- -I../headers
+//go:generate go run github.com/khulnasoft/gbpf/cmd/bpf2go -tags "linux" -type rtt_event bpf tcprtt_sockops.c -- -I../headers
 
 func main() {
 	stopper := make(chan os.Signal, 1)
 	signal.Notify(stopper, os.Interrupt, syscall.SIGTERM)
 
-	// Allow the current process to lock memory for eBPF resources.
+	// Allow the current process to lock memory for gBPF resources.
 	if err := rlimit.RemoveMemlock(); err != nil {
 		log.Fatal(err)
 	}
@@ -64,18 +63,18 @@ func main() {
 	}
 	defer objs.Close()
 
-	// Attach ebpf program to a cgroupv2
+	// Attach gbpf program to a cgroupv2
 	link, err := link.AttachCgroup(link.CgroupOptions{
 		Path:    cgroupPath,
 		Program: objs.bpfPrograms.BpfSockopsCb,
-		Attach:  ebpf.AttachCGroupSockOps,
+		Attach:  gbpf.AttachCGroupSockOps,
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer link.Close()
 
-	log.Printf("eBPF program loaded and attached on cgroup %s\n", cgroupPath)
+	log.Printf("gBPF program loaded and attached on cgroup %s\n", cgroupPath)
 
 	rd, err := ringbuf.NewReader(objs.bpfMaps.RttEvents)
 	if err != nil {
@@ -126,7 +125,7 @@ func readLoop(rd *ringbuf.Reader) {
 		}
 
 		// Parse the ringbuf event entry into a bpfRttEvent structure.
-		if err := binary.Read(bytes.NewBuffer(record.RawSample), internal.NativeEndian, &event); err != nil {
+		if err := binary.Read(bytes.NewBuffer(record.RawSample), binary.NativeEndian, &event); err != nil {
 			log.Printf("parsing ringbuf event: %s", err)
 			continue
 		}

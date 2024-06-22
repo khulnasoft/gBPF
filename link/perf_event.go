@@ -3,6 +3,7 @@ package link
 import (
 	"errors"
 	"fmt"
+	"os"
 	"runtime"
 	"unsafe"
 
@@ -33,9 +34,9 @@ import (
 //   they can be scoped to the current process by creating PMU perf events.
 // - perf event: An object instantiated based on an existing trace event or
 //   kernel symbol. Referred to by fd in userspace.
-//   Exactly one eBPF program can be attached to a perf event. Multiple perf
+//   Exactly one gBPF program can be attached to a perf event. Multiple perf
 //   events can be created from a single trace event. Closing a perf event
-//   stops any further invocations of the attached eBPF program.
+//   stops any further invocations of the attached gBPF program.
 
 var (
 	errInvalidInput = tracefs.ErrInvalidInput
@@ -45,7 +46,7 @@ const (
 	perfAllThreads = -1
 )
 
-// A perfEvent represents a perf event kernel object. Exactly one eBPF program
+// A perfEvent represents a perf event kernel object. Exactly one gBPF program
 // can be attached to it. It is created based on a tracefs trace event or a
 // Performance Monitoring Unit (PMU).
 type perfEvent struct {
@@ -76,6 +77,18 @@ func (pe *perfEvent) Close() error {
 	}
 
 	return nil
+}
+
+// PerfEvent is implemented by some Link types which use a perf event under
+// the hood.
+type PerfEvent interface {
+	// PerfEvent returns a file for the underlying perf event.
+	//
+	// It is the callers responsibility to close the returned file.
+	//
+	// Making changes to the associated perf event lead to
+	// undefined behaviour.
+	PerfEvent() (*os.File, error)
 }
 
 // perfEventLink represents a bpf perf link.
@@ -116,8 +129,51 @@ func (pl *perfEventLink) Close() error {
 	return nil
 }
 
-func (pl *perfEventLink) Update(prog *ebpf.Program) error {
+func (pl *perfEventLink) Update(prog *gbpf.Program) error {
 	return fmt.Errorf("perf event link update: %w", ErrNotSupported)
+}
+
+var _ PerfEvent = (*perfEventLink)(nil)
+
+func (pl *perfEventLink) PerfEvent() (*os.File, error) {
+	fd, err := pl.pe.fd.Dup()
+	if err != nil {
+		return nil, err
+	}
+
+	return fd.File("perf-event"), nil
+}
+
+func (pl *perfEventLink) Info() (*Info, error) {
+	var info sys.PerfEventLinkInfo
+	if err := sys.ObjInfo(pl.fd, &info); err != nil {
+		return nil, fmt.Errorf("perf event link info: %s", err)
+	}
+
+	var extra2 interface{}
+	switch info.PerfEventType {
+	case sys.BPF_PERF_EVENT_KPROBE, sys.BPF_PERF_EVENT_KRETPROBE:
+		var kprobeInfo sys.KprobeLinkInfo
+		if err := sys.ObjInfo(pl.fd, &kprobeInfo); err != nil {
+			return nil, fmt.Errorf("kprobe link info: %s", err)
+		}
+		extra2 = &KprobeInfo{
+			address: kprobeInfo.Addr,
+			missed:  kprobeInfo.Missed,
+		}
+	}
+
+	extra := &PerfEventInfo{
+		Type:  info.PerfEventType,
+		extra: extra2,
+	}
+
+	return &Info{
+		info.Type,
+		info.Id,
+		gbpf.ProgramID(info.ProgId),
+		extra,
+	}, nil
 }
 
 // perfEventIoctl implements Link and handles the perf event lifecycle
@@ -138,7 +194,7 @@ func (pi *perfEventIoctl) isLink() {}
 //
 // Detaching a program from a perf event is currently not possible, so a
 // program replacement mechanism cannot be implemented for perf events.
-func (pi *perfEventIoctl) Update(prog *ebpf.Program) error {
+func (pi *perfEventIoctl) Update(prog *gbpf.Program) error {
 	return fmt.Errorf("perf event ioctl update: %w", ErrNotSupported)
 }
 
@@ -154,10 +210,21 @@ func (pi *perfEventIoctl) Info() (*Info, error) {
 	return nil, fmt.Errorf("perf event ioctl info: %w", ErrNotSupported)
 }
 
-// attach the given eBPF prog to the perf event stored in pe.
+var _ PerfEvent = (*perfEventIoctl)(nil)
+
+func (pi *perfEventIoctl) PerfEvent() (*os.File, error) {
+	fd, err := pi.fd.Dup()
+	if err != nil {
+		return nil, err
+	}
+
+	return fd.File("perf-event"), nil
+}
+
+// attach the given gBPF prog to the perf event stored in pe.
 // pe must contain a valid perf event fd.
 // prog's type must match the program type stored in pe.
-func attachPerfEvent(pe *perfEvent, prog *ebpf.Program, cookie uint64) (Link, error) {
+func attachPerfEvent(pe *perfEvent, prog *gbpf.Program, cookie uint64) (Link, error) {
 	if prog == nil {
 		return nil, errors.New("cannot attach a nil program")
 	}
@@ -165,7 +232,7 @@ func attachPerfEvent(pe *perfEvent, prog *ebpf.Program, cookie uint64) (Link, er
 		return nil, fmt.Errorf("invalid program: %w", sys.ErrClosedFd)
 	}
 
-	if err := haveBPFLinkPerfEvent(); err == nil {
+	if err := havgBPFLinkPerfEvent(); err == nil {
 		return attachPerfEventLink(pe, prog, cookie)
 	}
 
@@ -176,8 +243,8 @@ func attachPerfEvent(pe *perfEvent, prog *ebpf.Program, cookie uint64) (Link, er
 	return attachPerfEventIoctl(pe, prog)
 }
 
-func attachPerfEventIoctl(pe *perfEvent, prog *ebpf.Program) (*perfEventIoctl, error) {
-	// Assign the eBPF program to the perf event.
+func attachPerfEventIoctl(pe *perfEvent, prog *gbpf.Program) (*perfEventIoctl, error) {
+	// Assign the gBPF program to the perf event.
 	err := unix.IoctlSetInt(pe.fd.Int(), unix.PERF_EVENT_IOC_SET_BPF, prog.FD())
 	if err != nil {
 		return nil, fmt.Errorf("setting perf event bpf program: %w", err)
@@ -194,7 +261,7 @@ func attachPerfEventIoctl(pe *perfEvent, prog *ebpf.Program) (*perfEventIoctl, e
 // Use the bpf api to attach the perf event (BPF_LINK_TYPE_PERF_EVENT, 5.15+).
 //
 // https://github.com/torvalds/linux/commit/b89fbfbb854c9afc3047e8273cc3a694650b802e
-func attachPerfEventLink(pe *perfEvent, prog *ebpf.Program, cookie uint64) (*perfEventLink, error) {
+func attachPerfEventLink(pe *perfEvent, prog *gbpf.Program, cookie uint64) (*perfEventLink, error) {
 	fd, err := sys.LinkCreatePerfEvent(&sys.LinkCreatePerfEventAttr{
 		ProgFd:     uint32(prog.FD()),
 		TargetFd:   pe.fd.Uint(),
@@ -229,7 +296,11 @@ func openTracepointPerfEvent(tid uint64, pid int) (*sys.FD, error) {
 		Wakeup:      1,
 	}
 
-	fd, err := unix.PerfEventOpen(&attr, pid, 0, -1, unix.PERF_FLAG_FD_CLOEXEC)
+	cpu := 0
+	if pid != perfAllThreads {
+		cpu = -1
+	}
+	fd, err := unix.PerfEventOpen(&attr, pid, cpu, -1, unix.PERF_FLAG_FD_CLOEXEC)
 	if err != nil {
 		return nil, fmt.Errorf("opening tracepoint perf event: %w", err)
 	}
@@ -241,10 +312,10 @@ func openTracepointPerfEvent(tid uint64, pid int) (*sys.FD, error) {
 //
 // https://elixir.bootlin.com/linux/v5.16.8/source/kernel/bpf/syscall.c#L4307
 // https://github.com/torvalds/linux/commit/b89fbfbb854c9afc3047e8273cc3a694650b802e
-var haveBPFLinkPerfEvent = internal.NewFeatureTest("bpf_link_perf_event", "5.15", func() error {
-	prog, err := ebpf.NewProgram(&ebpf.ProgramSpec{
+var havgBPFLinkPerfEvent = internal.NewFeatureTest("bpf_link_perf_event", "5.15", func() error {
+	prog, err := gbpf.NewProgram(&gbpf.ProgramSpec{
 		Name: "probe_bpf_perf_link",
-		Type: ebpf.Kprobe,
+		Type: gbpf.Kprobe,
 		Instructions: asm.Instructions{
 			asm.Mov.Imm(asm.R0, 0),
 			asm.Return(),

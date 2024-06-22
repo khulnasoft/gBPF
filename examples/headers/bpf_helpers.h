@@ -124,7 +124,7 @@ bpf_tail_call_static(void *ctx, const void *map, const __u32 slot)
 #endif
 
 /*
- * Helper structure used by eBPF C program
+ * Helper structure used by gBPF C program
  * to describe BPF map attributes to libbpf loader
  */
 struct bpf_map_def {

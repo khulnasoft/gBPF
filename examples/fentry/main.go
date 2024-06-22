@@ -1,4 +1,4 @@
-// This program demonstrates attaching a fentry eBPF program to
+// This program demonstrates attaching a fentry gBPF program to
 // tcp_connect. It prints the command/IPs/ports information
 // once the host sent a TCP SYN packet to a destination.
 // It supports IPv4 at this example.
@@ -28,13 +28,13 @@ import (
 	"github.com/khulnasoft/gbpf/rlimit"
 )
 
-//go:generate go run github.com/khulnasoft/gbpf/cmd/gbpf -type event bpf fentry.c -- -I../headers
+//go:generate go run github.com/khulnasoft/gbpf/cmd/bpf2go -type event bpf fentry.c -- -I../headers
 
 func main() {
 	stopper := make(chan os.Signal, 1)
 	signal.Notify(stopper, os.Interrupt, syscall.SIGTERM)
 
-	// Allow the current process to lock memory for eBPF resources.
+	// Allow the current process to lock memory for gBPF resources.
 	if err := rlimit.RemoveMemlock(); err != nil {
 		log.Fatal(err)
 	}

@@ -15,7 +15,7 @@ import (
 	"github.com/khulnasoft/gbpf/internal/testutils/fdtrace"
 	"github.com/khulnasoft/gbpf/internal/unix"
 
-	qt "github.com/frankban/quicktest"
+	"github.com/go-quicktest/qt"
 )
 
 func TestMain(m *testing.M) {
@@ -28,7 +28,7 @@ func TestRawLink(t *testing.T) {
 	link, err := AttachRawLink(RawLinkOptions{
 		Target:  int(cgroup.Fd()),
 		Program: prog,
-		Attach:  ebpf.AttachCGroupInetEgress,
+		Attach:  gbpf.AttachCGroupInetEgress,
 	})
 	testutils.SkipIfNotSupported(t, err)
 	if err != nil {
@@ -62,13 +62,13 @@ func TestUnpinRawLink(t *testing.T) {
 	link, _ := newPinnedRawLink(t, cgroup, prog)
 	defer link.Close()
 
-	qt.Assert(t, link.IsPinned(), qt.IsTrue)
+	qt.Assert(t, qt.IsTrue(link.IsPinned()))
 
 	if err := link.Unpin(); err != nil {
 		t.Fatal(err)
 	}
 
-	qt.Assert(t, link.IsPinned(), qt.IsFalse)
+	qt.Assert(t, qt.IsFalse(link.IsPinned()))
 }
 
 func TestRawLinkLoadPinnedWithOptions(t *testing.T) {
@@ -76,11 +76,11 @@ func TestRawLinkLoadPinnedWithOptions(t *testing.T) {
 	link, path := newPinnedRawLink(t, cgroup, prog)
 	defer link.Close()
 
-	qt.Assert(t, link.IsPinned(), qt.IsTrue)
+	qt.Assert(t, qt.IsTrue(link.IsPinned()))
 
 	// It seems like the kernel ignores BPF_F_RDONLY when updating a link,
 	// so we can't test this.
-	_, err := loadPinnedRawLink(path, &ebpf.LoadPinOptions{
+	_, err := loadPinnedRawLink(path, &gbpf.LoadPinOptions{
 		Flags: math.MaxUint32,
 	})
 	if !errors.Is(err, unix.EINVAL) {
@@ -88,13 +88,74 @@ func TestRawLinkLoadPinnedWithOptions(t *testing.T) {
 	}
 }
 
-func newPinnedRawLink(t *testing.T, cgroup *os.File, prog *ebpf.Program) (*RawLink, string) {
+func TestIterator(t *testing.T) {
+	cgroup, prog := mustCgroupFixtures(t)
+
+	tLink, err := AttachRawLink(RawLinkOptions{
+		Target:  int(cgroup.Fd()),
+		Program: prog,
+		Attach:  gbpf.AttachCGroupInetEgress,
+	})
+	testutils.SkipIfNotSupported(t, err)
+	if err != nil {
+		t.Fatal("Can't create original raw link:", err)
+	}
+	defer tLink.Close()
+	tLinkInfo, err := tLink.Info()
+	testutils.SkipIfNotSupported(t, err)
+	if err != nil {
+		t.Fatal("Can't get original link info:", err)
+	}
+
+	it := new(Iterator)
+	defer it.Close()
+
+	prev := it.ID
+	var foundLink Link
+	for it.Next() {
+		// Iterate all loaded links.
+		if it.Link == nil {
+			t.Fatal("Next doesn't assign link")
+		}
+		if it.ID == prev {
+			t.Fatal("Iterator doesn't advance ID")
+		}
+		prev = it.ID
+		if it.ID == tLinkInfo.ID {
+			foundLink = it.Take()
+		}
+	}
+	if err := it.Err(); err != nil {
+		t.Fatal("Iteration returned an error:", err)
+	}
+	if it.Link != nil {
+		t.Fatal("Next doesn't clean up link on last iteration")
+	}
+	if prev != it.ID {
+		t.Fatal("Next changes ID on last iteration")
+	}
+	if foundLink == nil {
+		t.Fatal("Original link not found")
+	}
+	defer foundLink.Close()
+	// Confirm that we found the original link.
+	info, err := foundLink.Info()
+	if err != nil {
+		t.Fatal("Can't get link info:", err)
+	}
+	if info.ID != tLinkInfo.ID {
+		t.Fatal("Found link has wrong ID")
+	}
+
+}
+
+func newPinnedRawLink(t *testing.T, cgroup *os.File, prog *gbpf.Program) (*RawLink, string) {
 	t.Helper()
 
 	link, err := AttachRawLink(RawLinkOptions{
 		Target:  int(cgroup.Fd()),
 		Program: prog,
-		Attach:  ebpf.AttachCGroupInetEgress,
+		Attach:  gbpf.AttachCGroupInetEgress,
 	})
 	testutils.SkipIfNotSupported(t, err)
 	if err != nil {
@@ -111,18 +172,18 @@ func newPinnedRawLink(t *testing.T, cgroup *os.File, prog *ebpf.Program) (*RawLi
 	return link, path
 }
 
-func mustCgroupFixtures(t *testing.T) (*os.File, *ebpf.Program) {
+func mustCgroupFixtures(t *testing.T) (*os.File, *gbpf.Program) {
 	t.Helper()
 
 	testutils.SkipIfNotSupported(t, haveProgAttach())
 
-	return testutils.CreateCgroup(t), mustLoadProgram(t, ebpf.CGroupSKB, 0, "")
+	return testutils.CreateCgroup(t), mustLoadProgram(t, gbpf.CGroupSKB, 0, "")
 }
 
-func testLink(t *testing.T, link Link, prog *ebpf.Program) {
+func testLink(t *testing.T, link Link, prog *gbpf.Program) {
 	t.Helper()
 
-	tmp, err := os.MkdirTemp("/sys/fs/bpf", "ebpf-test")
+	tmp, err := os.MkdirTemp("/sys/fs/bpf", "gbpf-test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +207,7 @@ func testLink(t *testing.T, link Link, prog *ebpf.Program) {
 			t.Errorf("Loading a pinned %T returns a %T", link, link2)
 		}
 
-		_, err = LoadPinnedLink(path, &ebpf.LoadPinOptions{
+		_, err = LoadPinnedLink(path, &gbpf.LoadPinOptions{
 			Flags: math.MaxUint32,
 		})
 		if !errors.Is(err, unix.EINVAL) {
@@ -204,6 +265,42 @@ func testLink(t *testing.T, link Link, prog *ebpf.Program) {
 			if xdp.Ifindex == 0 {
 				t.Fatalf("Failed to get link XDP extra info")
 			}
+		case sys.BPF_LINK_TYPE_TCX:
+			tcx := info.TCX()
+			if tcx.Ifindex == 0 {
+				t.Fatalf("Failed to get link TCX extra info")
+			}
+		case sys.BPF_LINK_TYPE_NETFILTER:
+			nf := info.Netfilter()
+			if nf.Priority == 0 {
+				t.Fatalf("Failed to get link Netfilter extra info")
+			}
+		case sys.BPF_LINK_TYPE_KPROBE_MULTI:
+			// test default Info data
+			kmulti := info.KprobeMulti()
+			if count, ok := kmulti.AddressCount(); ok {
+				qt.Assert(t, qt.Not(qt.Equals(count, 0)))
+
+				_, ok = kmulti.Missed()
+				qt.Assert(t, qt.IsTrue(ok))
+				// NB: We don't check that missed is actually correct
+				// since it's not easy to trigger from tests.
+			}
+		case sys.BPF_LINK_TYPE_PERF_EVENT:
+			// test default Info data
+			pevent := info.PerfEvent()
+			switch pevent.Type {
+			case sys.BPF_PERF_EVENT_KPROBE, sys.BPF_PERF_EVENT_KRETPROBE:
+				kp := pevent.Kprobe()
+				if addr, ok := kp.Address(); ok {
+					qt.Assert(t, qt.Not(qt.Equals(addr, 0)))
+
+					_, ok := kp.Missed()
+					qt.Assert(t, qt.IsTrue(ok))
+					// NB: We don't check that missed is actually correct
+					// since it's not easy to trigger from tests.
+				}
+			}
 		}
 	})
 
@@ -225,7 +322,7 @@ func testLink(t *testing.T, link Link, prog *ebpf.Program) {
 		}
 		defer unix.Close(dupFD)
 
-		newLink, err := NewLinkFromFD(dupFD)
+		newLink, err := NewFromFD(dupFD)
 		testutils.SkipIfNotSupported(t, err)
 		if err != nil {
 			t.Fatal("Can't create new link from dup link FD:", err)
@@ -242,16 +339,16 @@ func testLink(t *testing.T, link Link, prog *ebpf.Program) {
 	}
 }
 
-func mustLoadProgram(tb testing.TB, typ ebpf.ProgramType, attachType ebpf.AttachType, attachTo string) *ebpf.Program {
+func mustLoadProgram(tb testing.TB, typ gbpf.ProgramType, attachType gbpf.AttachType, attachTo string) *gbpf.Program {
 	tb.Helper()
 
 	license := "MIT"
 	switch typ {
-	case ebpf.RawTracepoint, ebpf.LSM:
+	case gbpf.RawTracepoint, gbpf.LSM:
 		license = "GPL"
 	}
 
-	prog, err := ebpf.NewProgram(&ebpf.ProgramSpec{
+	prog, err := gbpf.NewProgram(&gbpf.ProgramSpec{
 		Type:       typ,
 		AttachType: attachType,
 		AttachTo:   attachTo,

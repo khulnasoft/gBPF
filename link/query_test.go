@@ -1,67 +1,101 @@
 package link
 
 import (
+	"os"
+	"slices"
 	"testing"
 
 	"github.com/khulnasoft/gbpf"
 	"github.com/khulnasoft/gbpf/internal/testutils"
+
+	"github.com/go-quicktest/qt"
 )
 
 func TestQueryPrograms(t *testing.T) {
-	for name, fn := range map[string]func(*testing.T) (*ebpf.Program, QueryOptions){
-		"cgroup": queryCgroupFixtures,
-		"netns":  queryNetNSFixtures,
+	for name, fn := range map[string]func(*testing.T) (*gbpf.Program, Link, QueryOptions){
+		"cgroup":      queryCgroupProgAttachFixtures,
+		"cgroup link": queryCgroupLinkFixtures,
+		"netns":       queryNetNSFixtures,
+		"tcx":         queryTCXFixtures,
 	} {
 		t.Run(name, func(t *testing.T) {
-			prog, opts := fn(t)
-			ids, err := QueryPrograms(opts)
+			prog, link, opts := fn(t)
+			result, err := QueryPrograms(opts)
 			testutils.SkipIfNotSupported(t, err)
-			if err != nil {
-				t.Fatal("Can't query programs:", err)
-			}
+			qt.Assert(t, qt.IsNil(err))
 
 			progInfo, err := prog.Info()
-			if err != nil {
-				t.Fatal("Can't get program info:", err)
+			qt.Assert(t, qt.IsNil(err))
+			progID, _ := progInfo.ID()
+
+			i := slices.IndexFunc(result.Programs, func(ap AttachedProgram) bool {
+				return ap.ID == progID
+			})
+			qt.Assert(t, qt.Not(qt.Equals(i, -1)))
+
+			if name == "tcx" {
+				qt.Assert(t, qt.Not(qt.Equals(result.Revision, 0)))
 			}
 
-			progId, _ := progInfo.ID()
+			if result.HaveLinkInfo() {
+				ap := result.Programs[i]
+				linkInfo, err := link.Info()
+				qt.Assert(t, qt.IsNil(err))
 
-			for _, id := range ids {
-				if id == progId {
-					return
-				}
+				linkID, ok := ap.LinkID()
+				qt.Assert(t, qt.IsTrue(ok))
+				qt.Assert(t, qt.Equals(linkID, linkInfo.ID))
 			}
-			t.Fatalf("Can't find program ID %d in query result: %v", progId, ids)
 		})
 	}
 }
 
-func queryCgroupFixtures(t *testing.T) (*ebpf.Program, QueryOptions) {
+func queryCgroupProgAttachFixtures(t *testing.T) (*gbpf.Program, Link, QueryOptions) {
 	cgroup, prog := mustCgroupFixtures(t)
 
-	link, err := newProgAttachCgroup(cgroup, ebpf.AttachCGroupInetEgress, prog, 0)
+	link, err := newProgAttachCgroup(cgroup, gbpf.AttachCGroupInetEgress, prog, flagAllowOverride)
 	if err != nil {
 		t.Fatal("Can't create link:", err)
 	}
 	t.Cleanup(func() {
-		link.Close()
+		qt.Assert(t, qt.IsNil(link.Close()))
 	})
 
-	return prog, QueryOptions{Path: cgroup.Name(), Attach: ebpf.AttachCGroupInetEgress}
+	return prog, nil, QueryOptions{
+		Target: int(cgroup.Fd()),
+		Attach: gbpf.AttachCGroupInetEgress,
+	}
 }
 
-func queryNetNSFixtures(t *testing.T) (*ebpf.Program, QueryOptions) {
+func queryCgroupLinkFixtures(t *testing.T) (*gbpf.Program, Link, QueryOptions) {
+	cgroup, prog := mustCgroupFixtures(t)
+
+	link, err := newLinkCgroup(cgroup, gbpf.AttachCGroupInetEgress, prog)
+	testutils.SkipIfNotSupported(t, err)
+	if err != nil {
+		t.Fatal("Can't create link:", err)
+	}
+	t.Cleanup(func() {
+		qt.Assert(t, qt.IsNil(link.Close()))
+	})
+
+	return prog, nil, QueryOptions{
+		Target: int(cgroup.Fd()),
+		Attach: gbpf.AttachCGroupInetEgress,
+	}
+}
+
+func queryNetNSFixtures(t *testing.T) (*gbpf.Program, Link, QueryOptions) {
 	testutils.SkipOnOldKernel(t, "4.20", "flow_dissector program")
 
-	prog := mustLoadProgram(t, ebpf.FlowDissector, ebpf.AttachFlowDissector, "")
+	prog := mustLoadProgram(t, gbpf.FlowDissector, gbpf.AttachFlowDissector, "")
 
 	// RawAttachProgramOptions.Target needs to be 0, as PROG_ATTACH with namespaces
 	// only works with the threads current netns. Any other fd will be rejected.
 	if err := RawAttachProgram(RawAttachProgramOptions{
 		Target:  0,
 		Program: prog,
-		Attach:  ebpf.AttachFlowDissector,
+		Attach:  gbpf.AttachFlowDissector,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -70,12 +104,32 @@ func queryNetNSFixtures(t *testing.T) (*ebpf.Program, QueryOptions) {
 		err := RawDetachProgram(RawDetachProgramOptions{
 			Target:  0,
 			Program: prog,
-			Attach:  ebpf.AttachFlowDissector,
+			Attach:  gbpf.AttachFlowDissector,
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
 	})
 
-	return prog, QueryOptions{Path: "/proc/self/ns/net", Attach: ebpf.AttachFlowDissector}
+	netns, err := os.Open("/proc/self/ns/net")
+	qt.Assert(t, qt.IsNil(err))
+	t.Cleanup(func() { netns.Close() })
+
+	return prog, nil, QueryOptions{
+		Target: int(netns.Fd()),
+		Attach: gbpf.AttachFlowDissector,
+	}
+}
+
+func queryTCXFixtures(t *testing.T) (*gbpf.Program, Link, QueryOptions) {
+	testutils.SkipOnOldKernel(t, "6.6", "TCX link")
+
+	prog := mustLoadProgram(t, gbpf.SchedCLS, gbpf.AttachTCXIngress, "")
+
+	link, iface := mustAttachTCX(t, prog, gbpf.AttachTCXIngress)
+
+	return prog, link, QueryOptions{
+		Target: iface,
+		Attach: gbpf.AttachTCXIngress,
+	}
 }

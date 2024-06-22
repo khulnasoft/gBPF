@@ -115,7 +115,7 @@ static __u64 (*bpf_ktime_get_ns)(void) = (void *) 5;
  * 	prints a message defined by format *fmt* (of size *fmt_size*)
  * 	to file *\/sys/kernel/debug/tracing/trace* from DebugFS, if
  * 	available. It can take up to three additional **u64**
- * 	arguments (as an eBPF helpers, the total number of arguments is
+ * 	arguments (as an gBPF helpers, the total number of arguments is
  * 	limited to five).
  *
  * 	Each time the helper is called, it appends a line to the trace.
@@ -290,11 +290,11 @@ static long (*bpf_l4_csum_replace)(struct __sk_buff *skb, __u32 offset, __u64 fr
  * bpf_tail_call
  *
  * 	This special helper is used to trigger a "tail call", or in
- * 	other words, to jump into another eBPF program. The same stack
+ * 	other words, to jump into another gBPF program. The same stack
  * 	frame is used (but values on stack and in registers for the
  * 	caller are not accessible to the callee). This mechanism allows
  * 	for program chaining, either for raising the maximum number of
- * 	available eBPF instructions, or to execute given programs in
+ * 	available gBPF instructions, or to execute given programs in
  * 	conditional blocks. For security reasons, there is an upper
  * 	limit to the number of successive tail calls that can be
  * 	performed.
@@ -334,9 +334,9 @@ static long (*bpf_tail_call)(void *ctx, void *prog_array_map, __u32 index) = (vo
  * 	In comparison with **bpf_redirect**\ () helper,
  * 	**bpf_clone_redirect**\ () has the associated cost of
  * 	duplicating the packet buffer, but this can be executed out of
- * 	the eBPF program. Conversely, **bpf_redirect**\ () is more
+ * 	the gBPF program. Conversely, **bpf_redirect**\ () is more
  * 	efficient, but it is handled through an action code where the
- * 	redirection happens only after the eBPF program has returned.
+ * 	redirection happens only after the gBPF program has returned.
  *
  * 	A call to this helper is susceptible to change the underlying
  * 	packet buffer. Therefore, at load time, all checks on pointers
@@ -651,7 +651,7 @@ static __u32 (*bpf_get_route_realm)(struct __sk_buff *skb) = (void *) 24;
  * 	to indicate that the index of the current CPU core should be
  * 	used.
  *
- * 	The value to write, of *size*, is passed through eBPF stack and
+ * 	The value to write, of *size*, is passed through gBPF stack and
  * 	pointed by *data*.
  *
  * 	The context of the program *ctx* needs also be passed to the
@@ -660,15 +660,15 @@ static __u32 (*bpf_get_route_realm)(struct __sk_buff *skb) = (void *) 24;
  * 	On user space, a program willing to read the values needs to
  * 	call **perf_event_open**\ () on the perf event (either for
  * 	one or for all CPUs) and to store the file descriptor into the
- * 	*map*. This must be done before the eBPF program can send data
+ * 	*map*. This must be done before the gBPF program can send data
  * 	into it. An example is available in file
  * 	*samples/bpf/trace_output_user.c* in the Linux kernel source
- * 	tree (the eBPF program counterpart is in
+ * 	tree (the gBPF program counterpart is in
  * 	*samples/bpf/trace_output_kern.c*).
  *
  * 	**bpf_perf_event_output**\ () achieves better performance
  * 	than **bpf_trace_printk**\ () for sharing data with user
- * 	space, and is much better suitable for streaming data from eBPF
+ * 	space, and is much better suitable for streaming data from gBPF
  * 	programs.
  *
  * 	Note that this helper is not restricted to tracing use cases
@@ -699,7 +699,7 @@ static long (*bpf_perf_event_output)(void *ctx, void *map, __u64 flags, void *da
  * 	pointing respectively to the first byte of packet data and to
  * 	the byte after the last byte of packet data. However, it
  * 	remains useful if one wishes to read large quantities of data
- * 	at once from a packet into the eBPF stack.
+ * 	at once from a packet into the gBPF stack.
  *
  * Returns
  * 	0 on success, or a negative error in case of failure.
@@ -735,7 +735,7 @@ static long (*bpf_skb_load_bytes)(const void *skb, __u32 offset, void *to, __u32
  *
  * 	For walking a stack, this helper is an improvement over
  * 	**bpf_probe_read**\ (), which can be used with unrolled loops
- * 	but is not efficient and consumes a lot of eBPF instructions.
+ * 	but is not efficient and consumes a lot of gBPF instructions.
  * 	Instead, **bpf_get_stackid**\ () can collect up to
  * 	**PERF_MAX_STACK_DEPTH** both kernel and user frames. Note that
  * 	this limit can be controlled with the **sysctl** program, and
@@ -797,7 +797,7 @@ static __s64 (*bpf_csum_diff)(__be32 *from, __u32 from_size, __be32 *to, __u32 t
  * 	in combination with the Geneve encapsulation protocol, where it
  * 	allows for pushing (with **bpf_skb_get_tunnel_opt**\ () helper)
  * 	and retrieving arbitrary TLVs (Type-Length-Value headers) from
- * 	the eBPF program. This allows for full customization of these
+ * 	the gBPF program. This allows for full customization of these
  * 	headers.
  *
  * Returns
@@ -825,12 +825,12 @@ static long (*bpf_skb_set_tunnel_opt)(struct __sk_buff *skb, void *opt, __u32 si
  * 	Change the protocol of the *skb* to *proto*. Currently
  * 	supported are transition from IPv4 to IPv6, and from IPv6 to
  * 	IPv4. The helper takes care of the groundwork for the
- * 	transition, including resizing the socket buffer. The eBPF
+ * 	transition, including resizing the socket buffer. The gBPF
  * 	program is expected to fill the new headers, if any, via
  * 	**skb_store_bytes**\ () and to recompute the checksums with
  * 	**bpf_l3_csum_replace**\ () and **bpf_l4_csum_replace**\
  * 	(). The main case for this helper is to perform NAT64
- * 	operations out of an eBPF program.
+ * 	operations out of an gBPF program.
  *
  * 	Internally, the GSO type is marked as dodgy so that headers are
  * 	checked and segments are recalculated by the GSO/GRO engine.
@@ -855,7 +855,7 @@ static long (*bpf_skb_change_proto)(struct __sk_buff *skb, __be16 proto, __u64 f
  *
  * 	Change the packet type for the packet associated to *skb*. This
  * 	comes down to setting *skb*\ **->pkt_type** to *type*, except
- * 	the eBPF program does not have a write access to *skb*\
+ * 	the gBPF program does not have a write access to *skb*\
  * 	**->pkt_type** beside this helper. Using a helper here allows
  * 	for graceful handling of errors.
  *
@@ -939,7 +939,7 @@ static __u64 (*bpf_get_current_task)(void) = (void *) 35;
  *
  * 	Keep in mind that this feature is meant for experiments, and it
  * 	has a risk of crashing the system and running programs.
- * 	Therefore, when an eBPF program using this helper is attached,
+ * 	Therefore, when an gBPF program using this helper is attached,
  * 	a warning including PID and process name is printed to kernel
  * 	logs.
  *
@@ -972,7 +972,7 @@ static long (*bpf_current_task_under_cgroup)(void *map, __u32 index) = (void *) 
  * 	be left at zero.
  *
  * 	The basic idea is that the helper performs the needed work to
- * 	change the size of the packet, then the eBPF program rewrites
+ * 	change the size of the packet, then the gBPF program rewrites
  * 	the rest via helpers like **bpf_skb_store_bytes**\ (),
  * 	**bpf_l3_csum_replace**\ (), **bpf_l3_csum_replace**\ ()
  * 	and others. This helper is a slow path utility intended for
@@ -1066,8 +1066,8 @@ static void (*bpf_set_hash_invalid)(struct __sk_buff *skb) = (void *) 41;
  * 	Return the id of the current NUMA node. The primary use case
  * 	for this helper is the selection of sockets for the local NUMA
  * 	node, when the program is attached to sockets using the
- * 	**SO_ATTACH_REUSEPORT_EBPF** option (see also **socket(7)**),
- * 	but the helper is also available to other eBPF program types,
+ * 	**SO_ATTACH_REUSEPORT_GBPF** option (see also **socket(7)**),
+ * 	but the helper is also available to other gBPF program types,
  * 	similarly to **bpf_get_smp_processor_id**\ ().
  *
  * Returns
@@ -1324,9 +1324,9 @@ static long (*bpf_sk_redirect_map)(struct __sk_buff *skb, void *map, __u32 key, 
  * 	**BPF_ANY**
  * 		No condition on the existence of the entry for *key*.
  *
- * 	If the *map* has eBPF programs (parser and verdict), those will
+ * 	If the *map* has gBPF programs (parser and verdict), those will
  * 	be inherited by the socket being added. If the socket is
- * 	already attached to eBPF programs, this results in an error.
+ * 	already attached to gBPF programs, this results in an error.
  *
  * Returns
  * 	0 on success, or a negative error in case of failure.
@@ -1346,7 +1346,7 @@ static long (*bpf_sock_map_update)(struct bpf_sock_ops *skops, void *map, void *
  * 	are not required to use it. The rationale is that when the
  * 	packet is processed with XDP (e.g. as DoS filter), it is
  * 	possible to push further meta data along with it before passing
- * 	to the stack, and to give the guarantee that an ingress eBPF
+ * 	to the stack, and to give the guarantee that an ingress gBPF
  * 	program attached as a TC classifier on the same device can pick
  * 	this up for further post-processing. Since TC works with socket
  * 	buffers, it remains possible to set from XDP the **mark** or
@@ -1411,9 +1411,9 @@ static long (*bpf_xdp_adjust_meta)(struct xdp_md *xdp_md, int delta) = (void *) 
  * 	the time running for event since last normalization. The
  * 	enabled and running times are accumulated since the perf event
  * 	open. To achieve scaling factor between two invocations of an
- * 	eBPF program, users can use CPU id as the key (which is
+ * 	gBPF program, users can use CPU id as the key (which is
  * 	typical for perf array usage model) to remember the previous
- * 	value and do the calculation inside the eBPF program.
+ * 	value and do the calculation inside the gBPF program.
  *
  * Returns
  * 	0 on success, or a negative error in case of failure.
@@ -1423,7 +1423,7 @@ static long (*bpf_perf_event_read_value)(void *map, __u64 flags, struct bpf_perf
 /*
  * bpf_perf_prog_read_value
  *
- * 	For en eBPF program attached to a perf event, retrieve the
+ * 	For en gBPF program attached to a perf event, retrieve the
  * 	value of the event counter associated to *ctx* and store it in
  * 	the structure pointed by *buf* and of size *buf_size*. Enabled
  * 	and running times are also stored in the structure (see
@@ -1501,13 +1501,13 @@ static long (*bpf_override_return)(struct pt_regs *regs, __u64 rc) = (void *) 58
  * 	*argval*.
  *
  * 	The primary use of this field is to determine if there should
- * 	be calls to eBPF programs of type
+ * 	be calls to gBPF programs of type
  * 	**BPF_PROG_TYPE_SOCK_OPS** at various points in the TCP
  * 	code. A program of the same type can change its value, per
  * 	connection and as necessary, when the connection is
  * 	established. This field is directly accessible for reading, but
  * 	this helper must be used for updates in order to return an
- * 	error if an eBPF program tries to set a callback that is not
+ * 	error if an gBPF program tries to set a callback that is not
  * 	supported in the current kernel.
  *
  * 	*argval* is a flag array which can combine these flags:
@@ -1524,7 +1524,7 @@ static long (*bpf_override_return)(struct pt_regs *regs, __u64 rc) = (void *) 58
  * 	**bpf_sock_ops_cb_flags_set(bpf_sock,**
  * 		**bpf_sock->bpf_sock_ops_cb_flags & ~BPF_SOCK_OPS_RTO_CB_FLAG)**
  *
- * 	Here are some examples of where one could call such eBPF
+ * 	Here are some examples of where one could call such gBPF
  * 	program:
  *
  * 	* When RTO fires.
@@ -1546,7 +1546,7 @@ static long (*bpf_sock_ops_cb_flags_set)(struct bpf_sock_ops *bpf_sock, int argv
  *
  * 	This helper is used in programs implementing policies at the
  * 	socket level. If the message *msg* is allowed to pass (i.e. if
- * 	the verdict eBPF program returns **SK_PASS**), redirect it to
+ * 	the verdict gBPF program returns **SK_PASS**), redirect it to
  * 	the socket referenced by *map* (of type
  * 	**BPF_MAP_TYPE_SOCKMAP**) at index *key*. Both ingress and
  * 	egress interfaces can be used for redirection. The
@@ -1562,29 +1562,29 @@ static long (*bpf_msg_redirect_map)(struct sk_msg_md *msg, void *map, __u32 key,
 /*
  * bpf_msg_apply_bytes
  *
- * 	For socket policies, apply the verdict of the eBPF program to
+ * 	For socket policies, apply the verdict of the gBPF program to
  * 	the next *bytes* (number of bytes) of message *msg*.
  *
  * 	For example, this helper can be used in the following cases:
  *
  * 	* A single **sendmsg**\ () or **sendfile**\ () system call
- * 	  contains multiple logical messages that the eBPF program is
+ * 	  contains multiple logical messages that the gBPF program is
  * 	  supposed to read and for which it should apply a verdict.
- * 	* An eBPF program only cares to read the first *bytes* of a
+ * 	* An gBPF program only cares to read the first *bytes* of a
  * 	  *msg*. If the message has a large payload, then setting up
- * 	  and calling the eBPF program repeatedly for all bytes, even
+ * 	  and calling the gBPF program repeatedly for all bytes, even
  * 	  though the verdict is already known, would create unnecessary
  * 	  overhead.
  *
- * 	When called from within an eBPF program, the helper sets a
+ * 	When called from within an gBPF program, the helper sets a
  * 	counter internal to the BPF infrastructure, that is used to
  * 	apply the last verdict to the next *bytes*. If *bytes* is
  * 	smaller than the current data being processed from a
  * 	**sendmsg**\ () or **sendfile**\ () system call, the first
- * 	*bytes* will be sent and the eBPF program will be re-run with
+ * 	*bytes* will be sent and the gBPF program will be re-run with
  * 	the pointer for start of data pointing to byte number *bytes*
  * 	**+ 1**. If *bytes* is larger than the current data being
- * 	processed, then the eBPF verdict will be applied to multiple
+ * 	processed, then the gBPF verdict will be applied to multiple
  * 	**sendmsg**\ () or **sendfile**\ () calls until *bytes* are
  * 	consumed.
  *
@@ -1600,7 +1600,7 @@ static long (*bpf_msg_apply_bytes)(struct sk_msg_md *msg, __u32 bytes) = (void *
 /*
  * bpf_msg_cork_bytes
  *
- * 	For socket policies, prevent the execution of the verdict eBPF
+ * 	For socket policies, prevent the execution of the verdict gBPF
  * 	program for message *msg* until *bytes* (byte number) have been
  * 	accumulated.
  *
@@ -1609,9 +1609,9 @@ static long (*bpf_msg_apply_bytes)(struct sk_msg_md *msg, __u32 bytes) = (void *
  * 	multiple **sendmsg**\ () or **sendfile**\ () calls. The extreme
  * 	case would be a user calling **sendmsg**\ () repeatedly with
  * 	1-byte long message segments. Obviously, this is bad for
- * 	performance, but it is still valid. If the eBPF program needs
+ * 	performance, but it is still valid. If the gBPF program needs
  * 	*bytes* bytes to validate a header, this helper can be used to
- * 	prevent the eBPF program to be called again until *bytes* have
+ * 	prevent the gBPF program to be called again until *bytes* have
  * 	been accumulated.
  *
  * Returns
@@ -1634,7 +1634,7 @@ static long (*bpf_msg_cork_bytes)(struct sk_msg_md *msg, __u32 bytes) = (void *)
  * 	on the **sendpage** handler (e.g. **sendfile**\ ()) this will
  * 	be the range (**0**, **0**) because the data is shared with
  * 	user space and by default the objective is to avoid allowing
- * 	user space to modify data while (or after) eBPF verdict is
+ * 	user space to modify data while (or after) gBPF verdict is
  * 	being decided. This helper can be used to pull in data and to
  * 	set the start and end pointer to given values. Data will be
  * 	copied if necessary (i.e. if data was not linear and if start
@@ -1829,9 +1829,9 @@ static long (*bpf_fib_lookup)(void *ctx, struct bpf_fib_lookup *params, int plen
  * 	**BPF_ANY**
  * 		No condition on the existence of the entry for *key*.
  *
- * 	If the *map* has eBPF programs (parser and verdict), those will
+ * 	If the *map* has gBPF programs (parser and verdict), those will
  * 	be inherited by the socket being added. If the socket is
- * 	already attached to eBPF programs, this results in an error.
+ * 	already attached to gBPF programs, this results in an error.
  *
  * Returns
  * 	0 on success, or a negative error in case of failure.
@@ -1843,7 +1843,7 @@ static long (*bpf_sock_hash_update)(struct bpf_sock_ops *skops, void *map, void 
  *
  * 	This helper is used in programs implementing policies at the
  * 	socket level. If the message *msg* is allowed to pass (i.e. if
- * 	the verdict eBPF program returns **SK_PASS**), redirect it to
+ * 	the verdict gBPF program returns **SK_PASS**), redirect it to
  * 	the socket referenced by *map* (of type
  * 	**BPF_MAP_TYPE_SOCKHASH**) using hash *key*. Both ingress and
  * 	egress interfaces can be used for redirection. The
@@ -1861,7 +1861,7 @@ static long (*bpf_msg_redirect_hash)(struct sk_msg_md *msg, void *map, void *key
  *
  * 	This helper is used in programs implementing policies at the
  * 	skb socket level. If the sk_buff *skb* is allowed to pass (i.e.
- * 	if the verdict eBPF program returns **SK_PASS**), redirect it
+ * 	if the verdict gBPF program returns **SK_PASS**), redirect it
  * 	to the socket referenced by *map* (of type
  * 	**BPF_MAP_TYPE_SOCKHASH**) using hash *key*. Both ingress and
  * 	egress interfaces can be used for redirection. The
@@ -2716,7 +2716,7 @@ static __s64 (*bpf_tcp_gen_syncookie)(void *sk, void *iph, __u32 iph_len, struct
  * 	to indicate that the index of the current CPU core should be
  * 	used.
  *
- * 	The value to write, of *size*, is passed through eBPF stack and
+ * 	The value to write, of *size*, is passed through gBPF stack and
  * 	pointed by *data*.
  *
  * 	*ctx* is a pointer to in-kernel struct sk_buff.
@@ -2853,7 +2853,7 @@ static __u64 (*bpf_jiffies64)(void) = (void *) 118;
 /*
  * bpf_read_branch_records
  *
- * 	For an eBPF program attached to a perf event, retrieve the
+ * 	For an gBPF program attached to a perf event, retrieve the
  * 	branch records (**struct perf_branch_entry**) associated to *ctx*
  * 	and store it in the buffer pointed by *buf* up to size
  * 	*size* bytes.
@@ -2904,7 +2904,7 @@ static long (*bpf_get_ns_current_pid_tgid)(__u64 dev, __u64 ino, struct bpf_pidn
  * 	to indicate that the index of the current CPU core should be
  * 	used.
  *
- * 	The value to write, of *size*, is passed through eBPF stack and
+ * 	The value to write, of *size*, is passed through gBPF stack and
  * 	pointed by *data*.
  *
  * 	*ctx* is a pointer to in-kernel struct xdp_buff.
@@ -3773,7 +3773,7 @@ static struct socket *(*bpf_sock_from_file)(struct file *file) = (void *) 162;
  * 	actual packet size (resulting in negative packet size) will in
  * 	principle not exceed the MTU, why it is not considered a
  * 	failure.  Other BPF-helpers are needed for performing the
- * 	planned size change, why the responsability for catch a negative
+ * 	planned size change, why the responsibility for catch a negative
  * 	packet size belong in those helpers.
  *
  * 	Specifying *ifindex* zero means the MTU check is performed

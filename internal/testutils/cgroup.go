@@ -4,13 +4,13 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
-	"github.com/khulnasoft/gbpf/internal"
 	"github.com/khulnasoft/gbpf/internal/unix"
 )
 
-var cgroup2Path = internal.Memoize(func() (string, error) {
+var cgroup2Path = sync.OnceValues(func() (string, error) {
 	mounts, err := os.ReadFile("/proc/mounts")
 	if err != nil {
 		return "", err
@@ -36,7 +36,7 @@ func CreateCgroup(tb testing.TB) *os.File {
 		tb.Fatal("Can't locate cgroup2 mount:", err)
 	}
 
-	cgdir, err := os.MkdirTemp(cg2, "ebpf-link")
+	cgdir, err := os.MkdirTemp(cg2, "gbpf-link")
 	if err != nil {
 		tb.Fatal("Can't create cgroupv2:", err)
 	}

@@ -1,4 +1,4 @@
-package ebpf
+package gbpf
 
 import (
 	"errors"
@@ -7,13 +7,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-quicktest/qt"
+
 	"github.com/khulnasoft/gbpf/asm"
 	"github.com/khulnasoft/gbpf/btf"
 	"github.com/khulnasoft/gbpf/internal"
 	"github.com/khulnasoft/gbpf/internal/sys"
 	"github.com/khulnasoft/gbpf/internal/testutils"
 	"github.com/khulnasoft/gbpf/internal/unix"
-	qt "github.com/frankban/quicktest"
 )
 
 func TestMapInfoFromProc(t *testing.T) {
@@ -122,14 +123,14 @@ func TestProgramInfo(t *testing.T) {
 
 			if name == "proc" {
 				_, ok := info.CreatedByUID()
-				qt.Assert(t, ok, qt.IsFalse)
+				qt.Assert(t, qt.IsFalse(ok))
 			} else {
 				uid, ok := info.CreatedByUID()
 				if testutils.IsKernelLessThan(t, "4.15") {
-					qt.Assert(t, ok, qt.IsFalse)
+					qt.Assert(t, qt.IsFalse(ok))
 				} else {
-					qt.Assert(t, ok, qt.IsTrue)
-					qt.Assert(t, uid, qt.Equals, uint32(os.Getuid()))
+					qt.Assert(t, qt.IsTrue(ok))
+					qt.Assert(t, qt.Equals(uid, uint32(os.Getuid())))
 				}
 			}
 		})
@@ -143,7 +144,7 @@ func TestProgramInfoMapIDs(t *testing.T) {
 		ValueSize:  4,
 		MaxEntries: 1,
 	})
-	qt.Assert(t, err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 	defer arr.Close()
 
 	prog, err := NewProgram(&ProgramSpec{
@@ -155,28 +156,28 @@ func TestProgramInfoMapIDs(t *testing.T) {
 		},
 		License: "MIT",
 	})
-	qt.Assert(t, err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 	defer prog.Close()
 
 	info, err := prog.Info()
 	testutils.SkipIfNotSupported(t, err)
-	qt.Assert(t, err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 
 	ids, ok := info.MapIDs()
 	switch {
 	case testutils.IsKernelLessThan(t, "4.15"):
-		qt.Assert(t, ok, qt.IsFalse)
-		qt.Assert(t, ids, qt.HasLen, 0)
+		qt.Assert(t, qt.IsFalse(ok))
+		qt.Assert(t, qt.HasLen(ids, 0))
 
 	default:
-		qt.Assert(t, ok, qt.IsTrue)
+		qt.Assert(t, qt.IsTrue(ok))
 
 		mapInfo, err := arr.Info()
-		qt.Assert(t, err, qt.IsNil)
+		qt.Assert(t, qt.IsNil(err))
 
 		mapID, ok := mapInfo.ID()
-		qt.Assert(t, ok, qt.IsTrue)
-		qt.Assert(t, ids, qt.ContentEquals, []MapID{mapID})
+		qt.Assert(t, qt.IsTrue(ok))
+		qt.Assert(t, qt.ContentEquals(ids, []MapID{mapID}))
 	}
 }
 
@@ -189,22 +190,22 @@ func TestProgramInfoMapIDsNoMaps(t *testing.T) {
 		},
 		License: "MIT",
 	})
-	qt.Assert(t, err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 	defer prog.Close()
 
 	info, err := prog.Info()
 	testutils.SkipIfNotSupported(t, err)
-	qt.Assert(t, err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 
 	ids, ok := info.MapIDs()
 	switch {
 	case testutils.IsKernelLessThan(t, "4.15"):
-		qt.Assert(t, ok, qt.IsFalse)
-		qt.Assert(t, ids, qt.HasLen, 0)
+		qt.Assert(t, qt.IsFalse(ok))
+		qt.Assert(t, qt.HasLen(ids, 0))
 
 	default:
-		qt.Assert(t, ok, qt.IsTrue)
-		qt.Assert(t, ids, qt.HasLen, 0)
+		qt.Assert(t, qt.IsTrue(ok))
+		qt.Assert(t, qt.HasLen(ids, 0))
 	}
 }
 
@@ -259,6 +260,14 @@ func TestStats(t *testing.T) {
 	}
 	if rt != 0 {
 		t.Errorf("expected a runtime of 0ns but got %v", rt)
+	}
+
+	rm, ok := pi.RecursionMisses()
+	if !ok {
+		t.Errorf("expected recursion misses info to be available")
+	}
+	if rm != 0 {
+		t.Errorf("expected a recursion misses of 0 but got %v", rm)
 	}
 
 	if err := testStats(prog); err != nil {
@@ -370,13 +379,13 @@ func TestHaveProgramInfoMapIDs(t *testing.T) {
 func TestProgInfoExtBTF(t *testing.T) {
 	testutils.SkipOnOldKernel(t, "5.0", "Program BTF (func/line_info)")
 
-	spec, err := LoadCollectionSpec(fmt.Sprintf("testdata/loader-%s.elf", internal.ClangEndian))
+	spec, err := LoadCollectionSpec(testutils.NativeFile(t, "testdata/loader-%s.elf"))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	var obj struct {
-		Main *Program `ebpf:"xdp_prog"`
+		Main *Program `gbpf:"xdp_prog"`
 	}
 
 	err = spec.LoadAndAssign(&obj, nil)

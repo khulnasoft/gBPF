@@ -1,4 +1,4 @@
-package ebpf
+package gbpf
 
 import (
 	"encoding/binary"
@@ -211,17 +211,17 @@ func (cs *CollectionSpec) RewriteConstants(consts map[string]interface{}) error 
 //
 // 'to' must be a pointer to a struct. A field of the
 // struct is updated with values from Programs or Maps if it
-// has an `ebpf` tag and its type is *ProgramSpec or *MapSpec.
+// has an `gbpf` tag and its type is *ProgramSpec or *MapSpec.
 // The tag's value specifies the name of the program or map as
 // found in the CollectionSpec.
 //
 //	struct {
-//	    Foo     *ebpf.ProgramSpec `ebpf:"xdp_foo"`
-//	    Bar     *ebpf.MapSpec     `ebpf:"bar_map"`
+//	    Foo     *gbpf.ProgramSpec `gbpf:"xdp_foo"`
+//	    Bar     *gbpf.MapSpec     `gbpf:"bar_map"`
 //	    Ignored int
 //	}
 //
-// Returns an error if any of the eBPF objects can't be found, or
+// Returns an error if any of the gBPF objects can't be found, or
 // if the same MapSpec or ProgramSpec is assigned multiple times.
 func (cs *CollectionSpec) Assign(to interface{}) error {
 	// Assign() only supports assigning ProgramSpecs and MapSpecs,
@@ -260,15 +260,15 @@ func (cs *CollectionSpec) Assign(to interface{}) error {
 // if this sounds useful.
 //
 // 'to' must be a pointer to a struct. A field of the struct is updated with
-// a Program or Map if it has an `ebpf` tag and its type is *Program or *Map.
+// a Program or Map if it has an `gbpf` tag and its type is *Program or *Map.
 // The tag's value specifies the name of the program or map as found in the
 // CollectionSpec. Before updating the struct, the requested objects and their
 // dependent resources are loaded into the kernel and populated with values if
 // specified.
 //
 //	struct {
-//	    Foo     *ebpf.Program `ebpf:"xdp_foo"`
-//	    Bar     *ebpf.Map     `ebpf:"bar_map"`
+//	    Foo     *gbpf.Program `gbpf:"xdp_foo"`
+//	    Bar     *gbpf.Map     `gbpf:"bar_map"`
 //	    Ignored int
 //	}
 //
@@ -471,7 +471,7 @@ func (cl *collectionLoader) loadMap(mapName string) (*Map, error) {
 		return nil, fmt.Errorf("map %s: %w", mapName, err)
 	}
 
-	// Finalize 'scalar' maps that don't refer to any other eBPF resources
+	// Finalize 'scalar' maps that don't refer to any other gBPF resources
 	// potentially pending creation. This is needed for frozen maps like .rodata
 	// that need to be finalized before invoking the verifier.
 	if !mapSpec.Type.canStoreMapOrProgram() {
@@ -626,17 +626,20 @@ func resolveKconfig(m *MapSpec) error {
 			internal.NativeEndian.PutUint32(data[vsi.Offset:], kv.Kernel())
 
 		case "LINUX_HAS_SYSCALL_WRAPPER":
-			if integer, ok := v.Type.(*btf.Int); !ok || integer.Size != 4 {
-				return fmt.Errorf("variable %s must be a 32 bits integer, got %s", n, v.Type)
+			integer, ok := v.Type.(*btf.Int)
+			if !ok {
+				return fmt.Errorf("variable %s must be an integer, got %s", n, v.Type)
 			}
-			var value uint32 = 1
+			var value uint64 = 1
 			if err := haveSyscallWrapper(); errors.Is(err, ErrNotSupported) {
 				value = 0
 			} else if err != nil {
 				return fmt.Errorf("unable to derive a value for LINUX_HAS_SYSCALL_WRAPPER: %w", err)
 			}
 
-			internal.NativeEndian.PutUint32(data[vsi.Offset:], value)
+			if err := kconfig.PutInteger(data[vsi.Offset:], integer, value); err != nil {
+				return fmt.Errorf("set LINUX_HAS_SYSCALL_WRAPPER: %w", err)
+			}
 
 		default: // Catch CONFIG_*.
 			configs[n] = configInfo{
@@ -695,6 +698,71 @@ func LoadCollection(file string) (*Collection, error) {
 	return NewCollection(spec)
 }
 
+// Assign the contents of a Collection to a struct.
+//
+// This function bridges functionality between bpf2go generated
+// code and any functionality better implemented in Collection.
+//
+// 'to' must be a pointer to a struct. A field of the
+// struct is updated with values from Programs or Maps if it
+// has an `gbpf` tag and its type is *Program or *Map.
+// The tag's value specifies the name of the program or map as
+// found in the CollectionSpec.
+//
+//	struct {
+//	    Foo     *gbpf.Program `gbpf:"xdp_foo"`
+//	    Bar     *gbpf.Map     `gbpf:"bar_map"`
+//	    Ignored int
+//	}
+//
+// Returns an error if any of the gBPF objects can't be found, or
+// if the same Map or Program is assigned multiple times.
+//
+// Ownership and Close()ing responsibility is transferred to `to`
+// for any successful assigns. On error `to` is left in an undefined state.
+func (coll *Collection) Assign(to interface{}) error {
+	assignedMaps := make(map[string]bool)
+	assignedProgs := make(map[string]bool)
+
+	// Assign() only transfers already-loaded Maps and Programs. No extra
+	// loading is done.
+	getValue := func(typ reflect.Type, name string) (interface{}, error) {
+		switch typ {
+
+		case reflect.TypeOf((*Program)(nil)):
+			if p := coll.Programs[name]; p != nil {
+				assignedProgs[name] = true
+				return p, nil
+			}
+			return nil, fmt.Errorf("missing program %q", name)
+
+		case reflect.TypeOf((*Map)(nil)):
+			if m := coll.Maps[name]; m != nil {
+				assignedMaps[name] = true
+				return m, nil
+			}
+			return nil, fmt.Errorf("missing map %q", name)
+
+		default:
+			return nil, fmt.Errorf("unsupported type %s", typ)
+		}
+	}
+
+	if err := assignValues(to, getValue); err != nil {
+		return err
+	}
+
+	// Finalize ownership transfer
+	for p := range assignedProgs {
+		delete(coll.Programs, p)
+	}
+	for m := range assignedMaps {
+		delete(coll.Maps, m)
+	}
+
+	return nil
+}
+
 // Close frees all maps and programs associated with the collection.
 //
 // The collection mustn't be used afterwards.
@@ -729,15 +797,15 @@ func (coll *Collection) DetachProgram(name string) *Program {
 	return p
 }
 
-// structField represents a struct field containing the ebpf struct tag.
+// structField represents a struct field containing the gbpf struct tag.
 type structField struct {
 	reflect.StructField
 	value reflect.Value
 }
 
-// ebpfFields extracts field names tagged with 'ebpf' from a struct type.
+// gbpfFields extracts field names tagged with 'gbpf' from a struct type.
 // Keep track of visited types to avoid infinite recursion.
-func ebpfFields(structVal reflect.Value, visited map[reflect.Type]bool) ([]structField, error) {
+func gbpfFields(structVal reflect.Value, visited map[reflect.Type]bool) ([]structField, error) {
 	if visited == nil {
 		visited = make(map[reflect.Type]bool)
 	}
@@ -756,13 +824,13 @@ func ebpfFields(structVal reflect.Value, visited map[reflect.Type]bool) ([]struc
 		field := structField{structType.Field(i), structVal.Field(i)}
 
 		// If the field is tagged, gather it and move on.
-		name := field.Tag.Get("ebpf")
+		name := field.Tag.Get("gbpf")
 		if name != "" {
 			fields = append(fields, field)
 			continue
 		}
 
-		// If the field does not have an ebpf tag, but is a struct or a pointer
+		// If the field does not have an gbpf tag, but is a struct or a pointer
 		// to a struct, attempt to gather its fields as well.
 		var v reflect.Value
 		switch field.Type.Kind() {
@@ -786,7 +854,7 @@ func ebpfFields(structVal reflect.Value, visited map[reflect.Type]bool) ([]struc
 			continue
 		}
 
-		inner, err := ebpfFields(v, visited)
+		inner, err := gbpfFields(v, visited)
 		if err != nil {
 			return nil, fmt.Errorf("field %s: %w", field.Name, err)
 		}
@@ -797,7 +865,7 @@ func ebpfFields(structVal reflect.Value, visited map[reflect.Type]bool) ([]struc
 	return fields, nil
 }
 
-// assignValues attempts to populate all fields of 'to' tagged with 'ebpf'.
+// assignValues attempts to populate all fields of 'to' tagged with 'gbpf'.
 //
 // getValue is called for every tagged field of 'to' and must return the value
 // to be assigned to the field with the given typ and name.
@@ -813,7 +881,7 @@ func assignValues(to interface{},
 		return fmt.Errorf("nil pointer to %T", to)
 	}
 
-	fields, err := ebpfFields(toValue.Elem(), nil)
+	fields, err := gbpfFields(toValue.Elem(), nil)
 	if err != nil {
 		return err
 	}
@@ -827,19 +895,19 @@ func assignValues(to interface{},
 	assigned := make(map[elem]string)
 	for _, field := range fields {
 		// Get string value the field is tagged with.
-		tag := field.Tag.Get("ebpf")
+		tag := field.Tag.Get("gbpf")
 		if strings.Contains(tag, ",") {
-			return fmt.Errorf("field %s: ebpf tag contains a comma", field.Name)
+			return fmt.Errorf("field %s: gbpf tag contains a comma", field.Name)
 		}
 
-		// Check if the eBPF object with the requested
+		// Check if the gBPF object with the requested
 		// type and tag was already assigned elsewhere.
 		e := elem{field.Type, tag}
 		if af := assigned[e]; af != "" {
 			return fmt.Errorf("field %s: object %q was already assigned to %s", field.Name, tag, af)
 		}
 
-		// Get the eBPF object referred to by the tag.
+		// Get the gBPF object referred to by the tag.
 		value, err := getValue(field.Type, tag)
 		if err != nil {
 			return fmt.Errorf("field %s: %w", field.Name, err)

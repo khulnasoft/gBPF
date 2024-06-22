@@ -12,7 +12,7 @@ import (
 func TestSkLookup(t *testing.T) {
 	testutils.SkipOnOldKernel(t, "5.8", "sk_lookup program")
 
-	prog := mustLoadProgram(t, ebpf.SkLookup, ebpf.AttachSkLookup, "")
+	prog := mustLoadProgram(t, gbpf.SkLookup, gbpf.AttachSkLookup, "")
 
 	netns, err := os.Open("/proc/self/ns/net")
 	if err != nil {
@@ -28,10 +28,10 @@ func TestSkLookup(t *testing.T) {
 	testLink(t, link, prog)
 }
 
-func createSkLookupProgram() (*ebpf.Program, error) {
-	prog, err := ebpf.NewProgram(&ebpf.ProgramSpec{
-		Type:       ebpf.SkLookup,
-		AttachType: ebpf.AttachSkLookup,
+func createSkLookupProgram() (*gbpf.Program, error) {
+	prog, err := gbpf.NewProgram(&gbpf.ProgramSpec{
+		Type:       gbpf.SkLookup,
+		AttachType: gbpf.AttachSkLookup,
 		License:    "MIT",
 		Instructions: asm.Instructions{
 			asm.Mov.Imm(asm.R0, 0),

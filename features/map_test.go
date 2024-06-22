@@ -19,7 +19,7 @@ func TestHaveMapFlag(t *testing.T) {
 }
 
 func TestHaveMapTypeInvalid(t *testing.T) {
-	if err := HaveMapType(ebpf.MapType(math.MaxUint32)); err == nil {
+	if err := HaveMapType(gbpf.MapType(math.MaxUint32)); err == nil {
 		t.Fatal("Expected an error")
 	} else if errors.Is(err, internal.ErrNotSupported) {
 		t.Fatal("Got ErrNotSupported:", err)

@@ -2,13 +2,14 @@ package internal
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/khulnasoft/gbpf/internal/unix"
 )
 
 const (
 	// Version constant used in ELF binaries indicating that the loader needs to
-	// substitute the eBPF program's version with the value of the kernel's
+	// substitute the gBPF program's version with the value of the kernel's
 	// KERNEL_VERSION compile-time macro. Used for compatibility with BCC, gobpf
 	// and RedSift.
 	MagicKernelVersion = 0xFFFFFFFE
@@ -79,7 +80,7 @@ func (v Version) Kernel() uint32 {
 }
 
 // KernelVersion returns the version of the currently running kernel.
-var KernelVersion = Memoize(func() (Version, error) {
+var KernelVersion = sync.OnceValues(func() (Version, error) {
 	return detectKernelVersion()
 })
 

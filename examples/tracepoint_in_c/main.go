@@ -1,5 +1,5 @@
-// This program demonstrates attaching an eBPF program to a kernel tracepoint.
-// The eBPF program will be attached to the page allocation tracepoint and
+// This program demonstrates attaching an gBPF program to a kernel tracepoint.
+// The gBPF program will be attached to the page allocation tracepoint and
 // prints out the number of times it has been reached. The tracepoint fields
 // are printed into /sys/kernel/tracing/trace_pipe.
 package main
@@ -12,12 +12,12 @@ import (
 	"github.com/khulnasoft/gbpf/rlimit"
 )
 
-//go:generate go run github.com/khulnasoft/gbpf/cmd/gbpf bpf tracepoint.c -- -I../headers
+//go:generate go run github.com/khulnasoft/gbpf/cmd/bpf2go bpf tracepoint.c -- -I../headers
 
 const mapKey uint32 = 0
 
 func main() {
-	// Allow the current process to lock memory for eBPF resources.
+	// Allow the current process to lock memory for gBPF resources.
 	if err := rlimit.RemoveMemlock(); err != nil {
 		log.Fatal(err)
 	}

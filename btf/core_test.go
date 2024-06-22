@@ -4,53 +4,19 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
-	"github.com/khulnasoft/gbpf/internal"
-	"github.com/khulnasoft/gbpf/internal/testutils"
 	"github.com/google/go-cmp/cmp"
 
-	qt "github.com/frankban/quicktest"
+	"github.com/khulnasoft/gbpf/internal"
+	"github.com/khulnasoft/gbpf/internal/testutils"
+
+	"github.com/go-quicktest/qt"
 )
 
 func TestCheckTypeCompatibility(t *testing.T) {
-	tests := []struct {
-		a, b       Type
-		compatible bool
-	}{
-		{&FuncProto{Return: &Typedef{Type: &Int{}}}, &FuncProto{Return: &Int{}}, true},
-		{&FuncProto{Return: &Typedef{Type: &Int{}}}, &FuncProto{Return: &Void{}}, false},
-	}
-	for _, test := range tests {
-		err := CheckTypeCompatibility(test.a, test.b)
-		if test.compatible {
-			if err != nil {
-				t.Errorf("Expected types to be compatible: %s\na = %#v\nb = %#v", err, test.a, test.b)
-				continue
-			}
-		} else {
-			if !errors.Is(err, errIncompatibleTypes) {
-				t.Errorf("Expected types to be incompatible: %s\na = %#v\nb = %#v", err, test.a, test.b)
-				continue
-			}
-		}
-
-		err = CheckTypeCompatibility(test.b, test.a)
-		if test.compatible {
-			if err != nil {
-				t.Errorf("Expected reversed types to be compatible: %s\na = %#v\nb = %#v", err, test.a, test.b)
-			}
-		} else {
-			if !errors.Is(err, errIncompatibleTypes) {
-				t.Errorf("Expected reversed types to be incompatible: %s\na = %#v\nb = %#v", err, test.a, test.b)
-			}
-		}
-	}
-
-}
-
-func TestCOREAreTypesCompatible(t *testing.T) {
 	tests := []struct {
 		a, b       Type
 		compatible bool
@@ -82,10 +48,12 @@ func TestCOREAreTypesCompatible(t *testing.T) {
 			&FuncProto{Return: &Void{}, Params: []FuncParam{{Type: &Void{}}}},
 			false,
 		},
+		{&FuncProto{Return: &Typedef{Type: &Int{}}}, &FuncProto{Return: &Int{}}, true},
+		{&FuncProto{Return: &Typedef{Type: &Int{}}}, &FuncProto{Return: &Void{}}, false},
 	}
 
 	for _, test := range tests {
-		err := coreAreTypesCompatible(test.a, test.b)
+		err := CheckTypeCompatibility(test.a, test.b)
 		if test.compatible {
 			if err != nil {
 				t.Errorf("Expected types to be compatible: %s\na = %#v\nb = %#v", err, test.a, test.b)
@@ -98,7 +66,7 @@ func TestCOREAreTypesCompatible(t *testing.T) {
 			}
 		}
 
-		err = coreAreTypesCompatible(test.b, test.a)
+		err = CheckTypeCompatibility(test.b, test.a)
 		if test.compatible {
 			if err != nil {
 				t.Errorf("Expected reversed types to be compatible: %s\na = %#v\nb = %#v", err, test.a, test.b)
@@ -111,7 +79,7 @@ func TestCOREAreTypesCompatible(t *testing.T) {
 	}
 
 	for _, invalid := range []Type{&Var{}, &Datasec{}} {
-		err := coreAreTypesCompatible(invalid, invalid)
+		err := CheckTypeCompatibility(invalid, invalid)
 		if errors.Is(err, errIncompatibleTypes) {
 			t.Errorf("Expected an error for %T, not errIncompatibleTypes", invalid)
 		} else if err == nil {
@@ -255,9 +223,9 @@ func TestCOREFindEnumValue(t *testing.T) {
 	for _, test := range valid {
 		t.Run(test.name, func(t *testing.T) {
 			local, target, err := coreFindEnumValue(test.local, test.acc, test.target)
-			qt.Assert(t, err, qt.IsNil)
-			qt.Check(t, local.Value, qt.Equals, test.localValue)
-			qt.Check(t, target.Value, qt.Equals, test.targetValue)
+			qt.Assert(t, qt.IsNil(err))
+			qt.Check(t, qt.Equals(local.Value, test.localValue))
+			qt.Check(t, qt.Equals(target.Value, test.targetValue))
 		})
 	}
 }
@@ -522,7 +490,7 @@ func TestCOREFindField(t *testing.T) {
 	for _, test := range valid {
 		t.Run(test.name, func(t *testing.T) {
 			localField, targetField, err := coreFindField(test.local, test.acc, test.target)
-			qt.Assert(t, err, qt.IsNil)
+			qt.Assert(t, qt.IsNil(err))
 			checkCOREField(t, "local", localField, test.localField)
 			checkCOREField(t, "target", targetField, test.targetField)
 		})
@@ -583,14 +551,14 @@ func TestCORERelocation(t *testing.T) {
 		}
 
 		for section := range extInfos.funcInfos {
-			name := strings.TrimPrefix(section, "socket_filter/")
+			name := strings.TrimPrefix(section, "socket/")
 			t.Run(name, func(t *testing.T) {
 				var relos []*CORERelocation
 				for _, reloInfo := range extInfos.relocationInfos[section].infos {
 					relos = append(relos, reloInfo.relo)
 				}
 
-				fixups, err := CORERelocate(relos, spec, spec.byteOrder)
+				fixups, err := CORERelocate(relos, []*Spec{spec}, spec.imm.byteOrder, spec.TypeID)
 				if want := errs[name]; want != nil {
 					if !errors.Is(err, want) {
 						t.Fatal("Expected", want, "got", err)
@@ -614,64 +582,15 @@ func TestCORERelocation(t *testing.T) {
 	})
 }
 
-func TestCORECopyWithoutQualifiers(t *testing.T) {
-	qualifiers := []struct {
-		name string
-		fn   func(Type) Type
-	}{
-		{"const", func(t Type) Type { return &Const{Type: t} }},
-		{"volatile", func(t Type) Type { return &Volatile{Type: t} }},
-		{"restrict", func(t Type) Type { return &Restrict{Type: t} }},
-		{"typedef", func(t Type) Type { return &Typedef{Type: t} }},
-	}
-
-	for _, test := range qualifiers {
-		t.Run(test.name+" cycle", func(t *testing.T) {
-			root := &Volatile{}
-			root.Type = test.fn(root)
-
-			cycle, ok := Copy(root, UnderlyingType).(*cycle)
-			qt.Assert(t, ok, qt.IsTrue)
-			qt.Assert(t, cycle.root, qt.Equals, root)
-		})
-	}
-
-	for _, a := range qualifiers {
-		for _, b := range qualifiers {
-			t.Run(a.name+" "+b.name, func(t *testing.T) {
-				v := a.fn(&Pointer{Target: b.fn(&Int{Name: "z"})})
-				want := &Pointer{Target: &Int{Name: "z"}}
-
-				got := Copy(v, UnderlyingType)
-				qt.Assert(t, got, qt.DeepEquals, want)
-			})
-		}
-	}
-
-	t.Run("long chain", func(t *testing.T) {
-		rng := testutils.Rand(t)
-		root := &Int{Name: "abc"}
-		v := Type(root)
-		for i := 0; i < maxResolveDepth; i++ {
-			q := qualifiers[rng.Intn(len(qualifiers))]
-			v = q.fn(v)
-			t.Log(q.name)
-		}
-
-		got := Copy(v, UnderlyingType)
-		qt.Assert(t, got, qt.DeepEquals, root)
-	})
-}
-
 func TestCOREReloFieldSigned(t *testing.T) {
 	for _, typ := range []Type{&Int{}, &Enum{}} {
 		t.Run(fmt.Sprintf("%T with invalid target", typ), func(t *testing.T) {
 			relo := &CORERelocation{
 				typ, coreAccessor{0}, reloFieldSigned, 0,
 			}
-			fixup, err := coreCalculateFixup(relo, &Void{}, 0, internal.NativeEndian)
-			qt.Assert(t, fixup.poison, qt.IsTrue)
-			qt.Assert(t, err, qt.IsNil)
+			fixup, err := coreCalculateFixup(relo, &Void{}, internal.NativeEndian, dummyTypeID)
+			qt.Assert(t, qt.IsTrue(fixup.poison))
+			qt.Assert(t, qt.IsNil(err))
 		})
 	}
 
@@ -679,8 +598,8 @@ func TestCOREReloFieldSigned(t *testing.T) {
 		relo := &CORERelocation{
 			&Array{}, coreAccessor{0}, reloFieldSigned, 0,
 		}
-		_, err := coreCalculateFixup(relo, &Array{}, 0, internal.NativeEndian)
-		qt.Assert(t, err, qt.ErrorIs, errNoSignedness)
+		_, err := coreCalculateFixup(relo, &Array{}, internal.NativeEndian, dummyTypeID)
+		qt.Assert(t, qt.ErrorIs(err, errNoSignedness))
 	})
 }
 
@@ -696,10 +615,45 @@ func TestCOREReloFieldShiftU64(t *testing.T) {
 		{typ, coreAccessor{0, 0}, reloFieldLShiftU64, 1},
 	} {
 		t.Run(relo.kind.String(), func(t *testing.T) {
-			_, err := coreCalculateFixup(relo, typ, 1, internal.NativeEndian)
-			qt.Assert(t, err, qt.ErrorIs, errUnsizedType)
+			_, err := coreCalculateFixup(relo, typ, internal.NativeEndian, dummyTypeID)
+			qt.Assert(t, qt.ErrorIs(err, errUnsizedType))
 		})
 	}
+}
+
+func TestCORERelosKmodTypeID(t *testing.T) {
+	a := &Int{Name: "a"}
+	b := &Int{Name: "b"}
+
+	relos := []*CORERelocation{
+		{&Int{}, coreAccessor{0}, reloTypeIDTarget, 0},
+	}
+
+	typeID := func(t Type) (TypeID, error) {
+		if t == a {
+			return 42, nil
+		}
+		return 0, ErrNotFound
+	}
+
+	fixups, err := coreCalculateFixups(
+		relos,
+		[]Type{a, b},
+		internal.NativeEndian,
+		typeID,
+	)
+	qt.Assert(t, qt.IsNil(err))
+	qt.Assert(t, qt.IsFalse(fixups[0].poison))
+	qt.Assert(t, qt.Equals(fixups[0].target, 42))
+
+	fixups, err = coreCalculateFixups(
+		relos,
+		[]Type{b},
+		internal.NativeEndian,
+		typeID,
+	)
+	qt.Assert(t, qt.IsNil(err))
+	qt.Assert(t, qt.IsTrue(fixups[0].poison))
 }
 
 func BenchmarkCORESkBuff(b *testing.B) {
@@ -707,25 +661,30 @@ func BenchmarkCORESkBuff(b *testing.B) {
 
 	var skb *Struct
 	err := spec.TypeByName("sk_buff", &skb)
-	qt.Assert(b, err, qt.IsNil)
+	qt.Assert(b, qt.IsNil(err))
 
 	skbID, err := spec.TypeID(skb)
-	qt.Assert(b, err, qt.IsNil)
+	qt.Assert(b, qt.IsNil(err))
+
+	lenIndex := slices.IndexFunc(skb.Members, func(m Member) bool {
+		return m.Name == "len"
+	})
+	qt.Assert(b, qt.Not(qt.Equals(lenIndex, -1)))
 
 	var pktHashTypes *Enum
 	err = spec.TypeByName("pkt_hash_types", &pktHashTypes)
-	qt.Assert(b, err, qt.IsNil)
+	qt.Assert(b, qt.IsNil(err))
 
 	pktHashTypesID, err := spec.TypeID(pktHashTypes)
-	qt.Assert(b, err, qt.IsNil)
+	qt.Assert(b, qt.IsNil(err))
 
 	for _, relo := range []*CORERelocation{
-		{skb, coreAccessor{0, 0}, reloFieldByteOffset, skbID},
-		{skb, coreAccessor{0, 0}, reloFieldByteSize, skbID},
-		{skb, coreAccessor{0, 0}, reloFieldExists, skbID},
-		{skb, coreAccessor{0, 0}, reloFieldSigned, skbID},
-		{skb, coreAccessor{0, 0}, reloFieldLShiftU64, skbID},
-		{skb, coreAccessor{0, 0}, reloFieldRShiftU64, skbID},
+		{skb, coreAccessor{0, lenIndex}, reloFieldByteOffset, skbID},
+		{skb, coreAccessor{0, lenIndex}, reloFieldByteSize, skbID},
+		{skb, coreAccessor{0, lenIndex}, reloFieldExists, skbID},
+		{skb, coreAccessor{0, lenIndex}, reloFieldSigned, skbID},
+		{skb, coreAccessor{0, lenIndex}, reloFieldLShiftU64, skbID},
+		{skb, coreAccessor{0, lenIndex}, reloFieldRShiftU64, skbID},
 		{skb, coreAccessor{0}, reloTypeIDLocal, skbID},
 		{skb, coreAccessor{0}, reloTypeIDTarget, skbID},
 		{skb, coreAccessor{0}, reloTypeExists, skbID},
@@ -737,11 +696,240 @@ func BenchmarkCORESkBuff(b *testing.B) {
 			b.ReportAllocs()
 
 			for i := 0; i < b.N; i++ {
-				_, err = CORERelocate([]*CORERelocation{relo}, spec, spec.byteOrder)
+				_, err = CORERelocate([]*CORERelocation{relo}, []*Spec{spec}, spec.imm.byteOrder, spec.TypeID)
 				if err != nil {
 					b.Fatal(err)
 				}
 			}
 		})
 	}
+}
+
+func TestCORETypesMatch(t *testing.T) {
+	tests := []struct {
+		a, b       Type
+		match      bool
+		reversible bool
+	}{
+		{&Void{}, &Void{}, true, true},
+		{&Int{Size: 32}, &Int{Size: 32}, true, true},
+		{&Int{Size: 64}, &Int{Size: 32}, false, true},
+		{&Int{Size: 32}, &Int{Size: 32, Encoding: Signed}, false, true},
+		{&Fwd{Name: "a"}, &Fwd{Name: "a"}, true, true},
+		{&Fwd{Name: "a"}, &Fwd{Name: "b___new"}, false, true},
+		{&Fwd{Name: "a"}, &Fwd{Name: "a___new"}, true, true},
+		{&Fwd{Name: "a"}, &Struct{Name: "a___new"}, false, true},
+		{&Fwd{Name: "a"}, &Union{Name: "a___new"}, false, true},
+		{&Fwd{Name: "a", Kind: FwdStruct}, &Fwd{Name: "a___new", Kind: FwdUnion}, false, true},
+		{&Pointer{&Fwd{Name: "a", Kind: FwdStruct}}, &Pointer{&Struct{Name: "a___new"}}, true, true},
+		{&Pointer{&Fwd{Name: "a", Kind: FwdUnion}}, &Pointer{&Union{Name: "a___new"}}, true, true},
+		{&Pointer{&Fwd{Name: "a", Kind: FwdStruct}}, &Pointer{&Union{Name: "a___new"}}, false, true},
+		{&Struct{Name: "a___new"}, &Union{Name: "a___new"}, false, true},
+		{&Pointer{&Struct{Name: "a"}}, &Pointer{&Union{Name: "a___new"}}, false, true},
+		{
+			&Struct{Name: "a", Members: []Member{
+				{Name: "foo", Type: &Int{}},
+			}},
+			&Struct{Name: "a___new", Members: []Member{
+				{Name: "foo", Type: &Int{}},
+			}},
+			true,
+			true,
+		},
+		{
+			&Struct{Name: "a", Members: []Member{
+				{Name: "foo", Type: &Int{}},
+			}},
+			&Struct{Name: "a___new", Members: []Member{
+				{Name: "foo", Type: &Int{}},
+				{Name: "bar", Type: &Int{}},
+			}},
+			true,
+			false,
+		},
+		{
+			&Struct{Name: "a", Members: []Member{
+				{Name: "foo", Type: &Int{}},
+				{Name: "bar", Type: &Int{}},
+			}},
+			&Struct{Name: "a___new", Members: []Member{
+				{Name: "foo", Type: &Int{}},
+			}},
+			false,
+			false,
+		},
+		{
+			&Struct{Name: "a", Members: []Member{
+				{Name: "bar", Type: &Int{}},
+			}},
+			&Struct{Name: "a___new", Members: []Member{
+				{Name: "foo", Type: &Int{}},
+			}},
+			false,
+			false,
+		},
+		{
+			&Struct{Name: "a", Members: []Member{
+				{Name: "foo", Type: &Int{Encoding: Signed}},
+			}},
+			&Struct{Name: "a___new", Members: []Member{
+				{Name: "foo", Type: &Int{}},
+			}},
+			false,
+			false,
+		},
+		{
+			&Enum{Name: "a", Values: []EnumValue{
+				{"foo", 1},
+			}},
+			&Enum{Name: "a___new", Values: []EnumValue{
+				{"foo", 1},
+			}},
+			true,
+			true,
+		},
+		{
+			&Enum{Name: "a", Values: []EnumValue{
+				{"foo", 1},
+			}},
+			&Enum{Name: "a___new", Values: []EnumValue{
+				{"foo", 1},
+				{"bar", 2},
+			}},
+			true,
+			false,
+		},
+		{
+			&Enum{Name: "a", Values: []EnumValue{
+				{"foo", 1},
+				{"bar", 2},
+			}},
+			&Enum{Name: "a___new", Values: []EnumValue{
+				{"foo", 1},
+			}},
+			false,
+			false,
+		},
+		{
+			&Enum{Name: "a", Values: []EnumValue{
+				{"foo", 1},
+			}},
+			&Enum{Name: "a___new", Values: []EnumValue{
+				{"bar", 1},
+			}},
+			false,
+			false,
+		},
+		{
+			&Enum{Name: "a", Values: []EnumValue{
+				{"foo", 1},
+			}, Size: 1},
+			&Enum{Name: "a___new", Values: []EnumValue{
+				{"foo", 1},
+			}, Size: 2},
+			false,
+			false,
+		},
+		{
+			&Array{Type: &Int{}, Nelems: 2},
+			&Array{Type: &Int{}, Nelems: 2},
+			true,
+			true,
+		},
+		{
+			&Array{Type: &Int{}, Nelems: 3},
+			&Array{Type: &Int{}, Nelems: 2},
+			false,
+			true,
+		},
+		{
+			&Array{Type: &Void{}, Nelems: 2},
+			&Array{Type: &Int{}, Nelems: 2},
+			false,
+			true,
+		},
+		{
+			&FuncProto{Return: &Int{}, Params: []FuncParam{
+				{Name: "foo", Type: &Int{}},
+			}},
+			&FuncProto{Return: &Int{}, Params: []FuncParam{
+				{Name: "bar", Type: &Int{}},
+			}},
+			true,
+			true,
+		},
+		{
+			&FuncProto{Return: &Int{}, Params: []FuncParam{
+				{Name: "foo", Type: &Int{}},
+			}},
+			&FuncProto{Return: &Int{}, Params: []FuncParam{
+				{Name: "bar", Type: &Int{}},
+				{Name: "baz", Type: &Int{}},
+			}},
+			false,
+			true,
+		},
+		{
+			&FuncProto{Return: &Void{}, Params: []FuncParam{
+				{Name: "foo", Type: &Int{}},
+			}},
+			&FuncProto{Return: &Int{}, Params: []FuncParam{
+				{Name: "bar", Type: &Int{}},
+			}},
+			false,
+			true,
+		},
+		{
+			&FuncProto{Return: &Void{}, Params: []FuncParam{
+				{Name: "bar", Type: &Int{Encoding: Signed}},
+			}},
+			&FuncProto{Return: &Int{}, Params: []FuncParam{
+				{Name: "bar", Type: &Int{}},
+			}},
+			false,
+			true,
+		},
+	}
+
+	for _, test := range tests {
+		err := coreTypesMatch(test.a, test.b, nil)
+		if test.match {
+			if err != nil {
+				t.Errorf("Expected types to match: %s\na = %#v\nb = %#v", err, test.a, test.b)
+				continue
+			}
+		} else {
+			if !errors.Is(err, errIncompatibleTypes) {
+				t.Errorf("Expected types to be incompatible: \na = %#v\nb = %#v", test.a, test.b)
+				continue
+			}
+		}
+
+		if test.reversible {
+			err = coreTypesMatch(test.b, test.a, nil)
+			if test.match {
+				if err != nil {
+					t.Errorf("Expected reversed types to match: %s\na = %#v\nb = %#v", err, test.a, test.b)
+				}
+			} else {
+				if !errors.Is(err, errIncompatibleTypes) {
+					t.Errorf("Expected reversed types to be incompatible: %s\na = %#v\nb = %#v", err, test.a, test.b)
+				}
+			}
+		}
+	}
+
+	for _, invalid := range []Type{&Var{}, &Datasec{}} {
+		err := coreTypesMatch(invalid, invalid, nil)
+		if errors.Is(err, errIncompatibleTypes) {
+			t.Errorf("Expected an error for %T, not errIncompatibleTypes", invalid)
+		} else if err == nil {
+			t.Errorf("Expected an error for %T", invalid)
+		}
+	}
+}
+
+// dummyTypeID returns 0, nil for any passed type.
+func dummyTypeID(Type) (TypeID, error) {
+	return 0, nil
 }

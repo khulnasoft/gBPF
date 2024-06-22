@@ -14,11 +14,30 @@ type tracing struct {
 	RawLink
 }
 
-func (f *tracing) Update(new *ebpf.Program) error {
+func (f *tracing) Update(new *gbpf.Program) error {
 	return fmt.Errorf("tracing update: %w", ErrNotSupported)
 }
 
-// AttachFreplace attaches the given eBPF program to the function it replaces.
+func (f *tracing) Info() (*Info, error) {
+	var info sys.TracingLinkInfo
+	if err := sys.ObjInfo(f.fd, &info); err != nil {
+		return nil, fmt.Errorf("tracing link info: %s", err)
+	}
+	extra := &TracingInfo{
+		TargetObjId: info.TargetObjId,
+		TargetBtfId: info.TargetBtfId,
+		AttachType:  info.AttachType,
+	}
+
+	return &Info{
+		info.Type,
+		info.Id,
+		gbpf.ProgramID(info.ProgId),
+		extra,
+	}, nil
+}
+
+// AttachFreplace attaches the given gBPF program to the function it replaces.
 //
 // The program and name can either be provided at link time, or can be provided
 // at program load time. If they were provided at load time, they should be nil
@@ -27,15 +46,15 @@ func (f *tracing) Update(new *ebpf.Program) error {
 //
 //	AttachFreplace(dispatcher, "function", replacement)
 //	AttachFreplace(nil, "", replacement)
-func AttachFreplace(targetProg *ebpf.Program, name string, prog *ebpf.Program) (Link, error) {
+func AttachFreplace(targetProg *gbpf.Program, name string, prog *gbpf.Program) (Link, error) {
 	if (name == "") != (targetProg == nil) {
 		return nil, fmt.Errorf("must provide both or neither of name and targetProg: %w", errInvalidInput)
 	}
 	if prog == nil {
 		return nil, fmt.Errorf("prog cannot be nil: %w", errInvalidInput)
 	}
-	if prog.Type() != ebpf.Extension {
-		return nil, fmt.Errorf("eBPF program type %s is not an Extension: %w", prog.Type(), errInvalidInput)
+	if prog.Type() != gbpf.Extension {
+		return nil, fmt.Errorf("gBPF program type %s is not an Extension: %w", prog.Type(), errInvalidInput)
 	}
 
 	var (
@@ -69,7 +88,7 @@ func AttachFreplace(targetProg *ebpf.Program, name string, prog *ebpf.Program) (
 	link, err := AttachRawLink(RawLinkOptions{
 		Target:  target,
 		Program: prog,
-		Attach:  ebpf.AttachNone,
+		Attach:  gbpf.AttachNone,
 		BTF:     typeID,
 	})
 	if errors.Is(err, sys.ENOTSUPP) {
@@ -87,15 +106,15 @@ type TracingOptions struct {
 	// Program must be of type Tracing with attach type
 	// AttachTraceFEntry/AttachTraceFExit/AttachModifyReturn or
 	// AttachTraceRawTp.
-	Program *ebpf.Program
+	Program *gbpf.Program
 	// Program attach type. Can be one of:
 	// 	- AttachTraceFEntry
 	// 	- AttachTraceFExit
 	// 	- AttachModifyReturn
 	// 	- AttachTraceRawTp
 	// This field is optional.
-	AttachType ebpf.AttachType
-	// Arbitrary value that can be fetched from an eBPF program
+	AttachType gbpf.AttachType
+	// Arbitrary value that can be fetched from an gBPF program
 	// via `bpf_get_attach_cookie()`.
 	Cookie uint64
 }
@@ -103,14 +122,14 @@ type TracingOptions struct {
 type LSMOptions struct {
 	// Program must be of type LSM with attach type
 	// AttachLSMMac.
-	Program *ebpf.Program
-	// Arbitrary value that can be fetched from an eBPF program
+	Program *gbpf.Program
+	// Arbitrary value that can be fetched from an gBPF program
 	// via `bpf_get_attach_cookie()`.
 	Cookie uint64
 }
 
 // attachBTFID links all BPF program types (Tracing/LSM) that they attach to a btf_id.
-func attachBTFID(program *ebpf.Program, at ebpf.AttachType, cookie uint64) (Link, error) {
+func attachBTFID(program *gbpf.Program, at gbpf.AttachType, cookie uint64) (Link, error) {
 	if program.FD() < 0 {
 		return nil, fmt.Errorf("invalid program %w", sys.ErrClosedFd)
 	}
@@ -120,8 +139,8 @@ func attachBTFID(program *ebpf.Program, at ebpf.AttachType, cookie uint64) (Link
 		err error
 	)
 	switch at {
-	case ebpf.AttachTraceFEntry, ebpf.AttachTraceFExit, ebpf.AttachTraceRawTp,
-		ebpf.AttachModifyReturn, ebpf.AttachLSMMac:
+	case gbpf.AttachTraceFEntry, gbpf.AttachTraceFExit, gbpf.AttachTraceRawTp,
+		gbpf.AttachModifyReturn, gbpf.AttachLSMMac:
 		// Attach via BPF link
 		fd, err = sys.LinkCreateTracing(&sys.LinkCreateTracingAttr{
 			ProgFd:     uint32(program.FD()),
@@ -135,7 +154,7 @@ func attachBTFID(program *ebpf.Program, at ebpf.AttachType, cookie uint64) (Link
 			return nil, fmt.Errorf("create tracing link: %w", err)
 		}
 		fallthrough
-	case ebpf.AttachNone:
+	case gbpf.AttachNone:
 		// Attach via RawTracepointOpen
 		if cookie > 0 {
 			return nil, fmt.Errorf("create raw tracepoint with cookie: %w", ErrNotSupported)
@@ -174,13 +193,13 @@ func attachBTFID(program *ebpf.Program, at ebpf.AttachType, cookie uint64) (Link
 // a BTF-powered raw tracepoint (tp_btf) BPF Program to a BPF hook defined
 // in kernel modules.
 func AttachTracing(opts TracingOptions) (Link, error) {
-	if t := opts.Program.Type(); t != ebpf.Tracing {
+	if t := opts.Program.Type(); t != gbpf.Tracing {
 		return nil, fmt.Errorf("invalid program type %s, expected Tracing", t)
 	}
 
 	switch opts.AttachType {
-	case ebpf.AttachTraceFEntry, ebpf.AttachTraceFExit, ebpf.AttachModifyReturn,
-		ebpf.AttachTraceRawTp, ebpf.AttachNone:
+	case gbpf.AttachTraceFEntry, gbpf.AttachTraceFExit, gbpf.AttachModifyReturn,
+		gbpf.AttachTraceRawTp, gbpf.AttachNone:
 	default:
 		return nil, fmt.Errorf("invalid attach type: %s", opts.AttachType.String())
 	}
@@ -191,9 +210,9 @@ func AttachTracing(opts TracingOptions) (Link, error) {
 // AttachLSM links a Linux security module (LSM) BPF Program to a BPF
 // hook defined in kernel modules.
 func AttachLSM(opts LSMOptions) (Link, error) {
-	if t := opts.Program.Type(); t != ebpf.LSM {
+	if t := opts.Program.Type(); t != gbpf.LSM {
 		return nil, fmt.Errorf("invalid program type %s, expected LSM", t)
 	}
 
-	return attachBTFID(opts.Program, ebpf.AttachLSMMac, opts.Cookie)
+	return attachBTFID(opts.Program, gbpf.AttachLSMMac, opts.Cookie)
 }

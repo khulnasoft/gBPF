@@ -1,33 +1,27 @@
 package ringbuf
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"sync"
 	"time"
 
 	"github.com/khulnasoft/gbpf"
-	"github.com/khulnasoft/gbpf/internal"
 	"github.com/khulnasoft/gbpf/internal/epoll"
 	"github.com/khulnasoft/gbpf/internal/unix"
 )
 
 var (
-	ErrClosed  = os.ErrClosed
-	errEOR     = errors.New("end of ring")
-	errDiscard = errors.New("sample discarded")
-	errBusy    = errors.New("sample not committed yet")
+	ErrClosed = os.ErrClosed
+	errEOR    = errors.New("end of ring")
+	errBusy   = errors.New("sample not committed yet")
 )
-
-var ringbufHeaderSize = binary.Size(ringbufHeader{})
 
 // ringbufHeader from 'struct bpf_ringbuf_hdr' in kernel/bpf/ringbuf.c
 type ringbufHeader struct {
-	Len   uint32
-	PgOff uint32
+	Len uint32
+	_   uint32 // pg_off, only used by kernel internals
 }
 
 func (rh *ringbufHeader) isBusy() bool {
@@ -44,61 +38,9 @@ func (rh *ringbufHeader) dataLen() int {
 
 type Record struct {
 	RawSample []byte
-}
 
-// Read a record from an event ring.
-//
-// buf must be at least ringbufHeaderSize bytes long.
-func readRecord(rd *ringbufEventRing, rec *Record, buf []byte) error {
-	rd.loadConsumer()
-
-	buf = buf[:ringbufHeaderSize]
-	if _, err := io.ReadFull(rd, buf); err == io.EOF {
-		return errEOR
-	} else if err != nil {
-		return fmt.Errorf("read event header: %w", err)
-	}
-
-	header := ringbufHeader{
-		internal.NativeEndian.Uint32(buf[0:4]),
-		internal.NativeEndian.Uint32(buf[4:8]),
-	}
-
-	if header.isBusy() {
-		// the next sample in the ring is not committed yet so we
-		// exit without storing the reader/consumer position
-		// and start again from the same position.
-		return errBusy
-	}
-
-	/* read up to 8 byte alignment */
-	dataLenAligned := uint64(internal.Align(header.dataLen(), 8))
-
-	if header.isDiscard() {
-		// when the record header indicates that the data should be
-		// discarded, we skip it by just updating the consumer position
-		// to the next record instead of normal Read() to avoid allocating data
-		// and reading/copying from the ring (which normally keeps track of the
-		// consumer position).
-		rd.skipRead(dataLenAligned)
-		rd.storeConsumer()
-
-		return errDiscard
-	}
-
-	if cap(rec.RawSample) < int(dataLenAligned) {
-		rec.RawSample = make([]byte, dataLenAligned)
-	} else {
-		rec.RawSample = rec.RawSample[:dataLenAligned]
-	}
-
-	if _, err := io.ReadFull(rd, rec.RawSample); err != nil {
-		return fmt.Errorf("read sample: %w", err)
-	}
-
-	rd.storeConsumer()
-	rec.RawSample = rec.RawSample[:header.dataLen()]
-	return nil
+	// The minimum number of bytes remaining in the ring buffer after this Record has been read.
+	Remaining int
 }
 
 // Reader allows reading bpf_ringbuf_output
@@ -110,14 +52,14 @@ type Reader struct {
 	mu          sync.Mutex
 	ring        *ringbufEventRing
 	epollEvents []unix.EpollEvent
-	header      []byte
 	haveData    bool
 	deadline    time.Time
+	bufferSize  int
 }
 
 // NewReader creates a new BPF ringbuf reader.
-func NewReader(ringbufMap *ebpf.Map) (*Reader, error) {
-	if ringbufMap.Type() != ebpf.RingBuf {
+func NewReader(ringbufMap *gbpf.Map) (*Reader, error) {
+	if ringbufMap.Type() != gbpf.RingBuf {
 		return nil, fmt.Errorf("invalid Map type: %s", ringbufMap.Type())
 	}
 
@@ -146,7 +88,7 @@ func NewReader(ringbufMap *ebpf.Map) (*Reader, error) {
 		poller:      poller,
 		ring:        ring,
 		epollEvents: make([]unix.EpollEvent, 1),
-		header:      make([]byte, ringbufHeaderSize),
+		bufferSize:  ring.size(),
 	}, nil
 }
 
@@ -217,10 +159,10 @@ func (r *Reader) ReadInto(rec *Record) error {
 		}
 
 		for {
-			err := readRecord(r.ring, rec, r.header)
+			err := r.ring.readRecord(rec)
 			// Not using errors.Is which is quite a bit slower
 			// For a tight loop it might make a difference
-			if err == errBusy || err == errDiscard {
+			if err == errBusy {
 				continue
 			}
 			if err == errEOR {
@@ -230,4 +172,9 @@ func (r *Reader) ReadInto(rec *Record) error {
 			return err
 		}
 	}
+}
+
+// BufferSize returns the size in bytes of the ring buffer
+func (r *Reader) BufferSize() int {
+	return r.bufferSize
 }

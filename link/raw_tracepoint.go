@@ -12,14 +12,14 @@ type RawTracepointOptions struct {
 	// Tracepoint name.
 	Name string
 	// Program must be of type RawTracepoint*
-	Program *ebpf.Program
+	Program *gbpf.Program
 }
 
 // AttachRawTracepoint links a BPF program to a raw_tracepoint.
 //
 // Requires at least Linux 4.17.
 func AttachRawTracepoint(opts RawTracepointOptions) (Link, error) {
-	if t := opts.Program.Type(); t != ebpf.RawTracepoint && t != ebpf.RawTracepointWritable {
+	if t := opts.Program.Type(); t != gbpf.RawTracepoint && t != gbpf.RawTracepointWritable {
 		return nil, fmt.Errorf("invalid program type %s, expected RawTracepoint(Writable)", t)
 	}
 	if opts.Program.FD() < 0 {
@@ -34,7 +34,7 @@ func AttachRawTracepoint(opts RawTracepointOptions) (Link, error) {
 		return nil, err
 	}
 
-	err = haveBPFLink()
+	err = havgBPFLink()
 	if errors.Is(err, ErrNotSupported) {
 		// Prior to commit 70ed506c3bbc ("bpf: Introduce pinnable bpf_link abstraction")
 		// raw_tracepoints are just a plain fd.
@@ -60,7 +60,7 @@ func (frt *simpleRawTracepoint) Close() error {
 	return frt.fd.Close()
 }
 
-func (frt *simpleRawTracepoint) Update(_ *ebpf.Program) error {
+func (frt *simpleRawTracepoint) Update(_ *gbpf.Program) error {
 	return fmt.Errorf("update raw_tracepoint: %w", ErrNotSupported)
 }
 
@@ -82,6 +82,6 @@ type rawTracepoint struct {
 
 var _ Link = (*rawTracepoint)(nil)
 
-func (rt *rawTracepoint) Update(_ *ebpf.Program) error {
+func (rt *rawTracepoint) Update(_ *gbpf.Program) error {
 	return fmt.Errorf("update raw_tracepoint: %w", ErrNotSupported)
 }

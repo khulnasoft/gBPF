@@ -1,6 +1,6 @@
 # `khulnasoft/gbpf` LLVM Builder Image
 
-This is a simple Docker image to provide reproducible eBPF ELF builds across
+This is a simple Docker image to provide reproducible gBPF ELF builds across
 contributors' workstations. This standardizes on a single environment used to
 regenerate e.g. testdata ELFs and does not depend on the toolchain installed
 on the host machine.

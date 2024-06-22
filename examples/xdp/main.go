@@ -1,4 +1,4 @@
-// This program demonstrates attaching an eBPF program to a network interface
+// This program demonstrates attaching an gBPF program to a network interface
 // with XDP (eXpress Data Path). The program parses the IPv4 source address
 // from packets and writes the packet count by IP to an LRU hash map.
 // The userspace program (Go code in this file) prints the contents
@@ -21,7 +21,7 @@ import (
 	"github.com/khulnasoft/gbpf/link"
 )
 
-//go:generate go run github.com/khulnasoft/gbpf/cmd/gbpf bpf xdp.c -- -I../headers
+//go:generate go run github.com/khulnasoft/gbpf/cmd/bpf2go bpf xdp.c -- -I../headers
 
 func main() {
 	if len(os.Args) < 2 {
@@ -68,7 +68,7 @@ func main() {
 	}
 }
 
-func formatMapContents(m *ebpf.Map) (string, error) {
+func formatMapContents(m *gbpf.Map) (string, error) {
 	var (
 		sb  strings.Builder
 		key netip.Addr

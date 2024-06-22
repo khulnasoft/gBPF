@@ -10,10 +10,10 @@
 char __license[] SEC("license") = "Dual MIT/GPL";
 
 /**
- * For CO-RE relocatable eBPF programs, __attribute__((preserve_access_index))
+ * For CO-RE relocatable gBPF programs, __attribute__((preserve_access_index))
  * preserves the offset of the specified fields in the original kernel struct.
  * So here we don't need to include "vmlinux.h". Instead we only need to define
- * the kernel struct and their fields the eBPF program actually requires.
+ * the kernel struct and their fields the gBPF program actually requires.
  *
  * Also note that BTF-enabled programs like fentry, fexit, fmod_ret, tp_btf,
  * lsm, etc. declared using the BPF_PROG macro can read kernel memory without

@@ -18,7 +18,7 @@ import (
 // KprobeOptions defines additional parameters that will be used
 // when loading Kprobes.
 type KprobeOptions struct {
-	// Arbitrary value that can be fetched from an eBPF program
+	// Arbitrary value that can be fetched from an gBPF program
 	// via `bpf_get_attach_cookie()`.
 	//
 	// Needs kernel 5.15+.
@@ -35,7 +35,7 @@ type KprobeOptions struct {
 	RetprobeMaxActive int
 	// Prefix used for the event name if the kprobe must be attached using tracefs.
 	// The group name will be formatted as `<prefix>_<randomstr>`.
-	// The default empty string is equivalent to "ebpf" as the prefix.
+	// The default empty string is equivalent to "gbpf" as the prefix.
 	TraceFSPrefix string
 }
 
@@ -46,7 +46,7 @@ func (ko *KprobeOptions) cookie() uint64 {
 	return ko.Cookie
 }
 
-// Kprobe attaches the given eBPF program to a perf event that fires when the
+// Kprobe attaches the given gBPF program to a perf event that fires when the
 // given kernel symbol starts executing. See /proc/kallsyms for available
 // symbols. For example, printk():
 //
@@ -59,7 +59,9 @@ func (ko *KprobeOptions) cookie() uint64 {
 // If attaching to symbol fails, automatically retries with the running
 // platform's syscall prefix (e.g. __x64_) to support attaching to syscalls
 // in a portable fashion.
-func Kprobe(symbol string, prog *ebpf.Program, opts *KprobeOptions) (Link, error) {
+//
+// The returned Link may implement [PerfEvent].
+func Kprobe(symbol string, prog *gbpf.Program, opts *KprobeOptions) (Link, error) {
 	k, err := kprobe(symbol, prog, opts, false)
 	if err != nil {
 		return nil, err
@@ -74,7 +76,7 @@ func Kprobe(symbol string, prog *ebpf.Program, opts *KprobeOptions) (Link, error
 	return lnk, nil
 }
 
-// Kretprobe attaches the given eBPF program to a perf event that fires right
+// Kretprobe attaches the given gBPF program to a perf event that fires right
 // before the given kernel symbol exits, with the function stack left intact.
 // See /proc/kallsyms for available symbols. For example, printk():
 //
@@ -90,7 +92,9 @@ func Kprobe(symbol string, prog *ebpf.Program, opts *KprobeOptions) (Link, error
 //
 // On kernels 5.10 and earlier, setting a kretprobe on a nonexistent symbol
 // incorrectly returns unix.EINVAL instead of os.ErrNotExist.
-func Kretprobe(symbol string, prog *ebpf.Program, opts *KprobeOptions) (Link, error) {
+//
+// The returned Link may implement [PerfEvent].
+func Kretprobe(symbol string, prog *gbpf.Program, opts *KprobeOptions) (Link, error) {
 	k, err := kprobe(symbol, prog, opts, true)
 	if err != nil {
 		return nil, err
@@ -134,7 +138,7 @@ func isValidKprobeSymbol(s string) bool {
 
 // kprobe opens a perf event on the given symbol and attaches prog to it.
 // If ret is true, create a kretprobe.
-func kprobe(symbol string, prog *ebpf.Program, opts *KprobeOptions, ret bool) (*perfEvent, error) {
+func kprobe(symbol string, prog *gbpf.Program, opts *KprobeOptions, ret bool) (*perfEvent, error) {
 	if symbol == "" {
 		return nil, fmt.Errorf("symbol name cannot be empty: %w", errInvalidInput)
 	}
@@ -144,8 +148,8 @@ func kprobe(symbol string, prog *ebpf.Program, opts *KprobeOptions, ret bool) (*
 	if !isValidKprobeSymbol(symbol) {
 		return nil, fmt.Errorf("symbol '%s' must be a valid symbol in /proc/kallsyms: %w", symbol, errInvalidInput)
 	}
-	if prog.Type() != ebpf.Kprobe {
-		return nil, fmt.Errorf("eBPF program type %s is not a Kprobe: %w", prog.Type(), errInvalidInput)
+	if prog.Type() != gbpf.Kprobe {
+		return nil, fmt.Errorf("gBPF program type %s is not a Kprobe: %w", prog.Type(), errInvalidInput)
 	}
 
 	args := tracefs.ProbeArgs{
@@ -274,7 +278,11 @@ func pmuProbe(args tracefs.ProbeArgs) (*perfEvent, error) {
 		}
 	}
 
-	rawFd, err := unix.PerfEventOpen(&attr, args.Pid, 0, -1, unix.PERF_FLAG_FD_CLOEXEC)
+	cpu := 0
+	if args.Pid != perfAllThreads {
+		cpu = -1
+	}
+	rawFd, err := unix.PerfEventOpen(&attr, args.Pid, cpu, -1, unix.PERF_FLAG_FD_CLOEXEC)
 
 	// On some old kernels, kprobe PMU doesn't allow `.` in symbol names and
 	// return -EINVAL. Return ErrNotSupported to allow falling back to tracefs.
@@ -322,7 +330,7 @@ func pmuProbe(args tracefs.ProbeArgs) (*perfEvent, error) {
 // the executable/library path on the filesystem and the offset where the probe is inserted.
 // A perf event is then opened on the newly-created trace event and returned to the caller.
 func tracefsProbe(args tracefs.ProbeArgs) (*perfEvent, error) {
-	groupPrefix := "ebpf"
+	groupPrefix := "gbpf"
 	if args.Group != "" {
 		groupPrefix = args.Group
 	}

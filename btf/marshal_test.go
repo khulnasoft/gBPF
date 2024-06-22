@@ -6,11 +6,11 @@ import (
 	"math"
 	"testing"
 
-	"github.com/khulnasoft/gbpf/internal"
-	"github.com/khulnasoft/gbpf/internal/testutils"
+	"github.com/go-quicktest/qt"
 	"github.com/google/go-cmp/cmp"
 
-	qt "github.com/frankban/quicktest"
+	"github.com/khulnasoft/gbpf/internal"
+	"github.com/khulnasoft/gbpf/internal/testutils"
 )
 
 func TestBuilderMarshal(t *testing.T) {
@@ -28,16 +28,16 @@ func TestBuilderMarshal(t *testing.T) {
 	}
 
 	b, err := NewBuilder(want)
-	qt.Assert(t, err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 
 	cpy := *b
 	buf, err := b.Marshal(nil, &MarshalOptions{Order: internal.NativeEndian})
-	qt.Assert(t, err, qt.IsNil)
-	qt.Assert(t, b, qt.CmpEquals(cmp.AllowUnexported(*b)), &cpy, qt.Commentf("Marshaling should not change Builder state"))
+	qt.Assert(t, qt.IsNil(err))
+	qt.Assert(t, qt.CmpEquals(b, &cpy, cmp.AllowUnexported(*b)), qt.Commentf("Marshaling should not change Builder state"))
 
 	have, err := loadRawSpec(bytes.NewReader(buf), internal.NativeEndian, nil)
-	qt.Assert(t, err, qt.IsNil, qt.Commentf("Couldn't parse BTF"))
-	qt.Assert(t, have.types, qt.DeepEquals, want)
+	qt.Assert(t, qt.IsNil(err), qt.Commentf("Couldn't parse BTF"))
+	qt.Assert(t, qt.DeepEquals(have.imm.types, want))
 }
 
 func TestBuilderAdd(t *testing.T) {
@@ -50,28 +50,28 @@ func TestBuilderAdd(t *testing.T) {
 
 	var b Builder
 	id, err := b.Add(pi)
-	qt.Assert(t, err, qt.IsNil)
-	qt.Assert(t, id, qt.Equals, TypeID(1), qt.Commentf("First non-void type doesn't get id 1"))
+	qt.Assert(t, qt.IsNil(err))
+	qt.Assert(t, qt.Equals(id, TypeID(1)), qt.Commentf("First non-void type doesn't get id 1"))
 
 	id, err = b.Add(pi)
-	qt.Assert(t, err, qt.IsNil)
-	qt.Assert(t, id, qt.Equals, TypeID(1))
+	qt.Assert(t, qt.IsNil(err))
+	qt.Assert(t, qt.Equals(id, TypeID(1)))
 
 	id, err = b.Add(i)
-	qt.Assert(t, err, qt.IsNil)
-	qt.Assert(t, id, qt.Equals, TypeID(2), qt.Commentf("Second type doesn't get id 2"))
+	qt.Assert(t, qt.IsNil(err))
+	qt.Assert(t, qt.Equals(id, TypeID(2)), qt.Commentf("Second type doesn't get id 2"))
 
 	id, err = b.Add(i)
-	qt.Assert(t, err, qt.IsNil)
-	qt.Assert(t, id, qt.Equals, TypeID(2), qt.Commentf("Adding a type twice returns different ids"))
+	qt.Assert(t, qt.IsNil(err))
+	qt.Assert(t, qt.Equals(id, TypeID(2)), qt.Commentf("Adding a type twice returns different ids"))
 
 	id, err = b.Add(&Typedef{"baz", i})
-	qt.Assert(t, err, qt.IsNil)
-	qt.Assert(t, id, qt.Equals, TypeID(3))
+	qt.Assert(t, qt.IsNil(err))
+	qt.Assert(t, qt.Equals(id, TypeID(3)))
 }
 
 func TestRoundtripVMlinux(t *testing.T) {
-	types := typesFromSpec(t, vmlinuxSpec(t))
+	types := typesFromSpec(vmlinuxSpec(t))
 
 	// Randomize the order to force different permutations of walking the type
 	// graph. Keep Void at index 0.
@@ -79,16 +79,11 @@ func TestRoundtripVMlinux(t *testing.T) {
 		types[i+1], types[j+1] = types[j+1], types[i+1]
 	})
 
-	seen := make(map[Type]bool)
+	visited := make(map[Type]struct{})
 limitTypes:
 	for i, typ := range types {
-		iter := postorderTraversal(typ, func(t Type) (skip bool) {
-			return seen[t]
-		})
-		for iter.Next() {
-			seen[iter.Type] = true
-		}
-		if len(seen) >= math.MaxInt16 {
+		visitInPostorder(typ, visited, func(t Type) bool { return true })
+		if len(visited) >= math.MaxInt16 {
 			// IDs exceeding math.MaxUint16 can trigger a bug when loading BTF.
 			// This can be removed once the patch lands.
 			// See https://lore.kernel.org/bpf/20220909092107.3035-1-oss@lmb.io/
@@ -98,20 +93,20 @@ limitTypes:
 	}
 
 	b, err := NewBuilder(types)
-	qt.Assert(t, err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 	buf, err := b.Marshal(nil, KernelMarshalOptions())
-	qt.Assert(t, err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 
 	rebuilt, err := loadRawSpec(bytes.NewReader(buf), binary.LittleEndian, nil)
-	qt.Assert(t, err, qt.IsNil, qt.Commentf("round tripping BTF failed"))
+	qt.Assert(t, qt.IsNil(err), qt.Commentf("round tripping BTF failed"))
 
-	if n := len(rebuilt.types); n > math.MaxUint16 {
+	if n := len(rebuilt.imm.types); n > math.MaxUint16 {
 		t.Logf("Rebuilt BTF contains %d types which exceeds uint16, test may fail on older kernels", n)
 	}
 
 	h, err := NewHandleFromRawBTF(buf)
 	testutils.SkipIfNotSupported(t, err)
-	qt.Assert(t, err, qt.IsNil, qt.Commentf("loading rebuilt BTF failed"))
+	qt.Assert(t, qt.IsNil(err), qt.Commentf("loading rebuilt BTF failed"))
 	h.Close()
 }
 
@@ -127,33 +122,33 @@ func TestMarshalEnum64(t *testing.T) {
 	}
 
 	b, err := NewBuilder([]Type{enum})
-	qt.Assert(t, err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 	buf, err := b.Marshal(nil, &MarshalOptions{
 		Order:         internal.NativeEndian,
 		ReplaceEnum64: true,
 	})
-	qt.Assert(t, err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 
 	spec, err := loadRawSpec(bytes.NewReader(buf), internal.NativeEndian, nil)
-	qt.Assert(t, err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 
 	var have *Union
 	err = spec.TypeByName("enum64", &have)
-	qt.Assert(t, err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 
 	placeholder := &Int{Name: "enum64_placeholder", Size: 8, Encoding: Signed}
-	qt.Assert(t, have, qt.DeepEquals, &Union{
+	qt.Assert(t, qt.DeepEquals(have, &Union{
 		Name: "enum64",
 		Size: 8,
 		Members: []Member{
 			{Name: "A", Type: placeholder},
 			{Name: "B", Type: placeholder},
 		},
-	})
+	}))
 }
 
 func BenchmarkMarshaler(b *testing.B) {
-	types := typesFromSpec(b, vmlinuxTestdataSpec(b))[:100]
+	types := typesFromSpec(vmlinuxTestdataSpec(b))[:100]
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -168,7 +163,7 @@ func BenchmarkMarshaler(b *testing.B) {
 }
 
 func BenchmarkBuildVmlinux(b *testing.B) {
-	types := typesFromSpec(b, vmlinuxTestdataSpec(b))
+	types := typesFromSpec(vmlinuxTestdataSpec(b))
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -186,9 +181,9 @@ func marshalNativeEndian(tb testing.TB, types []Type) []byte {
 	tb.Helper()
 
 	b, err := NewBuilder(types)
-	qt.Assert(tb, err, qt.IsNil)
+	qt.Assert(tb, qt.IsNil(err))
 	buf, err := b.Marshal(nil, nil)
-	qt.Assert(tb, err, qt.IsNil)
+	qt.Assert(tb, qt.IsNil(err))
 	return buf
 }
 
@@ -197,14 +192,12 @@ func specFromTypes(tb testing.TB, types []Type) *Spec {
 
 	btf := marshalNativeEndian(tb, types)
 	spec, err := loadRawSpec(bytes.NewReader(btf), internal.NativeEndian, nil)
-	qt.Assert(tb, err, qt.IsNil)
+	qt.Assert(tb, qt.IsNil(err))
 
 	return spec
 }
 
-func typesFromSpec(tb testing.TB, spec *Spec) []Type {
-	tb.Helper()
-
+func typesFromSpec(spec *Spec) []Type {
 	var types []Type
 	iter := spec.Iterate()
 	for iter.Next() {

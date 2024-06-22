@@ -15,7 +15,7 @@ import (
 // HaveMapType probes the running kernel for the availability of the specified map type.
 //
 // See the package documentation for the meaning of the error return value.
-func HaveMapType(mt ebpf.MapType) error {
+func HaveMapType(mt gbpf.MapType) error {
 	return haveMapTypeMatrix.Result(mt)
 }
 
@@ -89,20 +89,20 @@ func createMap(attr *sys.MapCreateAttr) error {
 	// of the struct known by the running kernel, meaning the kernel is too old
 	// to support the given map type.
 	case errors.Is(err, unix.EINVAL), errors.Is(err, unix.E2BIG):
-		return ebpf.ErrNotSupported
+		return gbpf.ErrNotSupported
 	}
 
 	return err
 }
 
-var haveMapTypeMatrix = internal.FeatureMatrix[ebpf.MapType]{
-	ebpf.Hash:           {Version: "3.19"},
-	ebpf.Array:          {Version: "3.19"},
-	ebpf.ProgramArray:   {Version: "4.2"},
-	ebpf.PerfEventArray: {Version: "4.3"},
-	ebpf.PerCPUHash:     {Version: "4.6"},
-	ebpf.PerCPUArray:    {Version: "4.6"},
-	ebpf.StackTrace: {
+var haveMapTypeMatrix = internal.FeatureMatrix[gbpf.MapType]{
+	gbpf.Hash:           {Version: "3.19"},
+	gbpf.Array:          {Version: "3.19"},
+	gbpf.ProgramArray:   {Version: "4.2"},
+	gbpf.PerfEventArray: {Version: "4.3"},
+	gbpf.PerCPUHash:     {Version: "4.6"},
+	gbpf.PerCPUArray:    {Version: "4.6"},
+	gbpf.StackTrace: {
 		Version: "4.6",
 		Fn: func() error {
 			return probeMap(&sys.MapCreateAttr{
@@ -111,10 +111,10 @@ var haveMapTypeMatrix = internal.FeatureMatrix[ebpf.MapType]{
 			})
 		},
 	},
-	ebpf.CGroupArray: {Version: "4.8"},
-	ebpf.LRUHash:     {Version: "4.10"},
-	ebpf.LRUCPUHash:  {Version: "4.10"},
-	ebpf.LPMTrie: {
+	gbpf.CGroupArray: {Version: "4.8"},
+	gbpf.LRUHash:     {Version: "4.10"},
+	gbpf.LRUCPUHash:  {Version: "4.10"},
+	gbpf.LPMTrie: {
 		Version: "4.11",
 		Fn: func() error {
 			// keySize and valueSize need to be sizeof(struct{u32 + u8}) + 1 + padding = 8
@@ -127,29 +127,29 @@ var haveMapTypeMatrix = internal.FeatureMatrix[ebpf.MapType]{
 			})
 		},
 	},
-	ebpf.ArrayOfMaps: {
+	gbpf.ArrayOfMaps: {
 		Version: "4.12",
 		Fn:      func() error { return probeNestedMap(sys.BPF_MAP_TYPE_ARRAY_OF_MAPS) },
 	},
-	ebpf.HashOfMaps: {
+	gbpf.HashOfMaps: {
 		Version: "4.12",
 		Fn:      func() error { return probeNestedMap(sys.BPF_MAP_TYPE_HASH_OF_MAPS) },
 	},
-	ebpf.DevMap:   {Version: "4.14"},
-	ebpf.SockMap:  {Version: "4.14"},
-	ebpf.CPUMap:   {Version: "4.15"},
-	ebpf.XSKMap:   {Version: "4.18"},
-	ebpf.SockHash: {Version: "4.18"},
-	ebpf.CGroupStorage: {
+	gbpf.DevMap:   {Version: "4.14"},
+	gbpf.SockMap:  {Version: "4.14"},
+	gbpf.CPUMap:   {Version: "4.15"},
+	gbpf.XSKMap:   {Version: "4.18"},
+	gbpf.SockHash: {Version: "4.18"},
+	gbpf.CGroupStorage: {
 		Version: "4.19",
 		Fn:      func() error { return probeCgroupStorageMap(sys.BPF_MAP_TYPE_CGROUP_STORAGE) },
 	},
-	ebpf.ReusePortSockArray: {Version: "4.19"},
-	ebpf.PerCPUCGroupStorage: {
+	gbpf.ReusePortSockArray: {Version: "4.19"},
+	gbpf.PerCPUCGroupStorage: {
 		Version: "4.20",
 		Fn:      func() error { return probeCgroupStorageMap(sys.BPF_MAP_TYPE_PERCPU_CGROUP_STORAGE) },
 	},
-	ebpf.Queue: {
+	gbpf.Queue: {
 		Version: "4.20",
 		Fn: func() error {
 			return createMap(&sys.MapCreateAttr{
@@ -160,7 +160,7 @@ var haveMapTypeMatrix = internal.FeatureMatrix[ebpf.MapType]{
 			})
 		},
 	},
-	ebpf.Stack: {
+	gbpf.Stack: {
 		Version: "4.20",
 		Fn: func() error {
 			return createMap(&sys.MapCreateAttr{
@@ -171,12 +171,12 @@ var haveMapTypeMatrix = internal.FeatureMatrix[ebpf.MapType]{
 			})
 		},
 	},
-	ebpf.SkStorage: {
+	gbpf.SkStorage: {
 		Version: "5.2",
 		Fn:      func() error { return probeStorageMap(sys.BPF_MAP_TYPE_SK_STORAGE) },
 	},
-	ebpf.DevMapHash: {Version: "5.4"},
-	ebpf.StructOpsMap: {
+	gbpf.DevMapHash: {Version: "5.4"},
+	gbpf.StructOpsMap: {
 		Version: "5.6",
 		Fn: func() error {
 			// StructOps requires setting a vmlinux type id, but id 1 will always
@@ -192,7 +192,7 @@ var haveMapTypeMatrix = internal.FeatureMatrix[ebpf.MapType]{
 			return err
 		},
 	},
-	ebpf.RingBuf: {
+	gbpf.RingBuf: {
 		Version: "5.8",
 		Fn: func() error {
 			// keySize and valueSize need to be 0
@@ -205,11 +205,11 @@ var haveMapTypeMatrix = internal.FeatureMatrix[ebpf.MapType]{
 			})
 		},
 	},
-	ebpf.InodeStorage: {
+	gbpf.InodeStorage: {
 		Version: "5.10",
 		Fn:      func() error { return probeStorageMap(sys.BPF_MAP_TYPE_INODE_STORAGE) },
 	},
-	ebpf.TaskStorage: {
+	gbpf.TaskStorage: {
 		Version: "5.11",
 		Fn:      func() error { return probeStorageMap(sys.BPF_MAP_TYPE_TASK_STORAGE) },
 	},
@@ -264,7 +264,7 @@ func probeMapFlag(attr *sys.MapCreateAttr) error {
 		fd.Close()
 	} else if errors.Is(err, unix.EINVAL) {
 		// EINVAL occurs when attempting to create a map with an unknown type or an unknown flag.
-		err = ebpf.ErrNotSupported
+		err = gbpf.ErrNotSupported
 	}
 
 	return err

@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/khulnasoft/gbpf"
+	"github.com/khulnasoft/gbpf/internal/sys"
 )
 
 // XDPAttachFlags represents how XDP program will be attached to interface.
@@ -21,7 +22,7 @@ const (
 
 type XDPOptions struct {
 	// Program must be an XDP BPF program.
-	Program *ebpf.Program
+	Program *gbpf.Program
 
 	// Interface is the interface index to attach program to.
 	Interface int
@@ -35,7 +36,7 @@ type XDPOptions struct {
 
 // AttachXDP links an XDP BPF program to an XDP hook.
 func AttachXDP(opts XDPOptions) (Link, error) {
-	if t := opts.Program.Type(); t != ebpf.XDP {
+	if t := opts.Program.Type(); t != gbpf.XDP {
 		return nil, fmt.Errorf("invalid program type %s, expected XDP", t)
 	}
 
@@ -45,10 +46,31 @@ func AttachXDP(opts XDPOptions) (Link, error) {
 
 	rawLink, err := AttachRawLink(RawLinkOptions{
 		Program: opts.Program,
-		Attach:  ebpf.AttachXDP,
+		Attach:  gbpf.AttachXDP,
 		Target:  opts.Interface,
 		Flags:   uint32(opts.Flags),
 	})
 
-	return rawLink, err
+	return &xdpLink{*rawLink}, err
+}
+
+type xdpLink struct {
+	RawLink
+}
+
+func (xdp *xdpLink) Info() (*Info, error) {
+	var info sys.XDPLinkInfo
+	if err := sys.ObjInfo(xdp.fd, &info); err != nil {
+		return nil, fmt.Errorf("xdp link info: %s", err)
+	}
+	extra := &XDPInfo{
+		Ifindex: info.Ifindex,
+	}
+
+	return &Info{
+		info.Type,
+		info.Id,
+		gbpf.ProgramID(info.ProgId),
+		extra,
+	}, nil
 }

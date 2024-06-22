@@ -1,9 +1,10 @@
-package ebpf
+package gbpf
 
 import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"runtime"
 
@@ -258,7 +259,7 @@ var haveProbeReadKernel = internal.NewFeatureTest("bpf_probe_read_kernel", "5.5"
 	return nil
 })
 
-var haveBPFToBPFCalls = internal.NewFeatureTest("bpf2bpf calls", "4.16", func() error {
+var havgBPFToBPFCalls = internal.NewFeatureTest("bpf2bpf calls", "4.16", func() error {
 	insns := asm.Instructions{
 		asm.Call.Label("prog2").WithSymbol("prog1"),
 		asm.Return(),
@@ -287,7 +288,7 @@ var haveSyscallWrapper = internal.NewFeatureTest("syscall wrapper", "4.17", func
 	}
 
 	var err error
-	args.Group, err = tracefs.RandomGroup("ebpf_probe")
+	args.Group, err = tracefs.RandomGroup("gbpf_probe")
 	if err != nil {
 		return err
 	}
@@ -301,4 +302,36 @@ var haveSyscallWrapper = internal.NewFeatureTest("syscall wrapper", "4.17", func
 	}
 
 	return evt.Close()
+})
+
+var haveProgramExtInfos = internal.NewFeatureTest("program ext_infos", "5.0", func() error {
+	insns := asm.Instructions{
+		asm.Mov.Imm(asm.R0, 0),
+		asm.Return(),
+	}
+
+	buf := bytes.NewBuffer(make([]byte, 0, insns.Size()))
+	if err := insns.Marshal(buf, internal.NativeEndian); err != nil {
+		return err
+	}
+	bytecode := buf.Bytes()
+
+	_, err := sys.ProgLoad(&sys.ProgLoadAttr{
+		ProgType:    sys.ProgType(SocketFilter),
+		License:     sys.NewStringPointer("MIT"),
+		Insns:       sys.NewSlicePointer(bytecode),
+		InsnCnt:     uint32(len(bytecode) / asm.InstructionSize),
+		FuncInfoCnt: 1,
+		ProgBtfFd:   math.MaxUint32,
+	})
+
+	if errors.Is(err, unix.EBADF) {
+		return nil
+	}
+
+	if errors.Is(err, unix.E2BIG) {
+		return ErrNotSupported
+	}
+
+	return err
 })

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/khulnasoft/gbpf/internal"
@@ -110,7 +111,7 @@ func sanitizeTracefsPath(path ...string) (string, error) {
 // Since kernel 4.1 tracefs should be mounted by default at /sys/kernel/tracing,
 // but may be also be available at /sys/kernel/debug/tracing if debugfs is mounted.
 // The available tracefs paths will depends on distribution choices.
-var getTracefsPath = internal.Memoize(func() (string, error) {
+var getTracefsPath = sync.OnceValues(func() (string, error) {
 	for _, p := range []struct {
 		path   string
 		fsType int64
@@ -232,13 +233,13 @@ func NewEvent(args ProbeArgs) (*Event, error) {
 		// -:[GRP/]EVENT                                        : Clear a probe
 		//
 		// Some examples:
-		// r:ebpf_1234/r_my_kretprobe nf_conntrack_destroy
-		// p:ebpf_5678/p_my_kprobe __x64_sys_execve
+		// r:gbpf_1234/r_my_kretprobe nf_conntrack_destroy
+		// p:gbpf_5678/p_my_kprobe __x64_sys_execve
 		//
 		// Leaving the kretprobe's MAXACTIVE set to 0 (or absent) will make the
-		// kernel default to NR_CPUS. This is desired in most eBPF cases since
+		// kernel default to NR_CPUS. This is desired in most gBPF cases since
 		// subsampling or rate limiting logic can be more accurately implemented in
-		// the eBPF program itself.
+		// the gBPF program itself.
 		// See Documentation/kprobes.txt for more details.
 		if args.RetprobeMaxActive != 0 && !args.Ret {
 			return nil, ErrInvalidMaxActive
@@ -252,8 +253,8 @@ func NewEvent(args ProbeArgs) (*Event, error) {
 		// -:[GRP/]EVENT                           : Clear a probe
 		//
 		// Some examples:
-		// r:ebpf_1234/readline /bin/bash:0x12345
-		// p:ebpf_5678/main_mySymbol /bin/mybin:0x12345(0x123)
+		// r:gbpf_1234/readline /bin/bash:0x12345
+		// p:gbpf_5678/main_mySymbol /bin/mybin:0x12345(0x123)
 		//
 		// See Documentation/trace/uprobetracer.txt for more details.
 		if args.RetprobeMaxActive != 0 {

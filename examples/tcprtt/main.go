@@ -1,4 +1,4 @@
-// This program demonstrates attaching a fentry eBPF program to
+// This program demonstrates attaching a fentry gBPF program to
 // tcp_close and reading the RTT from the TCP socket using CO-RE helpers.
 // It prints the IPs/ports/RTT information
 // once the host closes a TCP connection.
@@ -24,19 +24,18 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/khulnasoft/gbpf/internal"
 	"github.com/khulnasoft/gbpf/link"
 	"github.com/khulnasoft/gbpf/ringbuf"
 	"github.com/khulnasoft/gbpf/rlimit"
 )
 
-//go:generate go run github.com/khulnasoft/gbpf/cmd/gbpf -type event bpf tcprtt.c -- -I../headers
+//go:generate go run github.com/khulnasoft/gbpf/cmd/bpf2go -type event bpf tcprtt.c -- -I../headers
 
 func main() {
 	stopper := make(chan os.Signal, 1)
 	signal.Notify(stopper, os.Interrupt, syscall.SIGTERM)
 
-	// Allow the current process to lock memory for eBPF resources.
+	// Allow the current process to lock memory for gBPF resources.
 	if err := rlimit.RemoveMemlock(); err != nil {
 		log.Fatal(err)
 	}
@@ -90,7 +89,7 @@ func readLoop(rd *ringbuf.Reader) {
 		}
 
 		// Parse the ringbuf event entry into a bpfEvent structure.
-		if err := binary.Read(bytes.NewBuffer(record.RawSample), internal.NativeEndian, &event); err != nil {
+		if err := binary.Read(bytes.NewBuffer(record.RawSample), binary.NativeEndian, &event); err != nil {
 			log.Printf("parsing ringbuf event: %s", err)
 			continue
 		}
@@ -108,6 +107,6 @@ func readLoop(rd *ringbuf.Reader) {
 // intToIP converts IPv4 number to net.IP
 func intToIP(ipNum uint32) net.IP {
 	ip := make(net.IP, 4)
-	internal.NativeEndian.PutUint32(ip, ipNum)
+	binary.NativeEndian.PutUint32(ip, ipNum)
 	return ip
 }

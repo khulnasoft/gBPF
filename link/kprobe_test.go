@@ -5,7 +5,7 @@ import (
 	"os"
 	"testing"
 
-	qt "github.com/frankban/quicktest"
+	"github.com/go-quicktest/qt"
 
 	"github.com/khulnasoft/gbpf"
 	"github.com/khulnasoft/gbpf/asm"
@@ -26,7 +26,7 @@ var symTests = []string{
 }
 
 func TestKprobe(t *testing.T) {
-	prog := mustLoadProgram(t, ebpf.Kprobe, 0, "")
+	prog := mustLoadProgram(t, gbpf.Kprobe, 0, "")
 
 	for _, tt := range symTests {
 		t.Run(tt, func(t *testing.T) {
@@ -38,23 +38,21 @@ func TestKprobe(t *testing.T) {
 		})
 	}
 
-	c := qt.New(t)
-
 	k, err := Kprobe("bogus", prog, nil)
-	c.Assert(err, qt.ErrorIs, os.ErrNotExist, qt.Commentf("got error: %s", err))
+	qt.Assert(t, qt.ErrorIs(err, os.ErrNotExist), qt.Commentf("got error: %s", err))
 	if k != nil {
 		k.Close()
 	}
 
 	k, err = Kprobe(ksym, prog, nil)
-	c.Assert(err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 	defer k.Close()
 
 	testLink(t, k, prog)
 }
 
 func TestKprobeOffset(t *testing.T) {
-	prog := mustLoadProgram(t, ebpf.Kprobe, 0, "")
+	prog := mustLoadProgram(t, gbpf.Kprobe, 0, "")
 
 	// The layout of a function is compiler and arch dependent, so we try to
 	// find a valid attach target in the first few bytes of the function.
@@ -71,7 +69,7 @@ func TestKprobeOffset(t *testing.T) {
 }
 
 func TestKretprobeMaxActive(t *testing.T) {
-	prog := mustLoadProgram(t, ebpf.Kprobe, 0, "")
+	prog := mustLoadProgram(t, gbpf.Kprobe, 0, "")
 	defer prog.Close()
 
 	_, err := Kprobe("do_sys_open", prog, &KprobeOptions{RetprobeMaxActive: 4096})
@@ -92,7 +90,7 @@ func TestKretprobeMaxActive(t *testing.T) {
 }
 
 func TestKretprobe(t *testing.T) {
-	prog := mustLoadProgram(t, ebpf.Kprobe, 0, "")
+	prog := mustLoadProgram(t, gbpf.Kprobe, 0, "")
 
 	for _, tt := range symTests {
 		t.Run(tt, func(t *testing.T) {
@@ -104,8 +102,6 @@ func TestKretprobe(t *testing.T) {
 		})
 	}
 
-	c := qt.New(t)
-
 	k, err := Kretprobe("bogus", prog, nil)
 	if !(errors.Is(err, os.ErrNotExist) || errors.Is(err, unix.EINVAL)) {
 		t.Fatal(err)
@@ -115,28 +111,26 @@ func TestKretprobe(t *testing.T) {
 	}
 
 	k, err = Kretprobe(ksym, prog, nil)
-	c.Assert(err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 	defer k.Close()
 
 	testLink(t, k, prog)
 }
 
 func TestKprobeErrors(t *testing.T) {
-	c := qt.New(t)
-
 	// Invalid Kprobe incantations. Kretprobe uses the same code paths
 	// with a different ret flag.
 	_, err := Kprobe("", nil, nil) // empty symbol
-	c.Assert(errors.Is(err, errInvalidInput), qt.IsTrue)
+	qt.Assert(t, qt.ErrorIs(err, errInvalidInput))
 
 	_, err = Kprobe("_", nil, nil) // empty prog
-	c.Assert(errors.Is(err, errInvalidInput), qt.IsTrue)
+	qt.Assert(t, qt.ErrorIs(err, errInvalidInput))
 
-	_, err = Kprobe(".", &ebpf.Program{}, nil) // illegal chars in symbol
-	c.Assert(errors.Is(err, errInvalidInput), qt.IsTrue)
+	_, err = Kprobe(".", &gbpf.Program{}, nil) // illegal chars in symbol
+	qt.Assert(t, qt.ErrorIs(err, errInvalidInput))
 
-	_, err = Kprobe("foo", &ebpf.Program{}, nil) // wrong prog type
-	c.Assert(errors.Is(err, errInvalidInput), qt.IsTrue)
+	_, err = Kprobe("foo", &gbpf.Program{}, nil) // wrong prog type
+	qt.Assert(t, qt.ErrorIs(err, errInvalidInput))
 }
 
 // Test k(ret)probe creation using perf_kprobe PMU.
@@ -144,33 +138,29 @@ func TestKprobeCreatePMU(t *testing.T) {
 	// Requires at least 4.17 (e12f03d7031a "perf/core: Implement the 'perf_kprobe' PMU")
 	testutils.SkipOnOldKernel(t, "4.17", "perf_kprobe PMU")
 
-	c := qt.New(t)
-
 	// kprobe happy path. printk is always present.
 	pk, err := pmuProbe(tracefs.ProbeArgs{Type: tracefs.Kprobe, Symbol: ksym})
-	c.Assert(err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 	defer pk.Close()
 
 	// kretprobe happy path.
 	pr, err := pmuProbe(tracefs.ProbeArgs{Type: tracefs.Kprobe, Symbol: ksym, Ret: true})
-	c.Assert(err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 	defer pr.Close()
 
 	// Expect os.ErrNotExist when specifying a non-existent kernel symbol
 	// on kernels 4.17 and up.
 	_, err = pmuProbe(tracefs.ProbeArgs{Type: tracefs.Kprobe, Symbol: "bogus"})
-	c.Assert(errors.Is(err, os.ErrNotExist), qt.IsTrue, qt.Commentf("got error: %s", err))
+	qt.Assert(t, qt.ErrorIs(err, os.ErrNotExist), qt.Commentf("got error: %s", err))
 
 	// A kernel bug was fixed in 97c753e62e6c where EINVAL was returned instead
 	// of ENOENT, but only for kretprobes.
 	_, err = pmuProbe(tracefs.ProbeArgs{Type: tracefs.Kprobe, Symbol: "bogus", Ret: true})
-	c.Assert(errors.Is(err, os.ErrNotExist), qt.IsTrue, qt.Commentf("got error: %s", err))
+	qt.Assert(t, qt.ErrorIs(err, os.ErrNotExist), qt.Commentf("got error: %s", err))
 }
 
 // Test fallback behaviour on kernels without perf_kprobe PMU available.
 func TestKprobePMUUnavailable(t *testing.T) {
-	c := qt.New(t)
-
 	pk, err := pmuProbe(tracefs.ProbeArgs{Type: tracefs.Kprobe, Symbol: ksym})
 	if err == nil {
 		pk.Close()
@@ -178,7 +168,7 @@ func TestKprobePMUUnavailable(t *testing.T) {
 	}
 
 	// Only allow a PMU creation with a valid kernel symbol to fail with ErrNotSupported.
-	c.Assert(errors.Is(err, ErrNotSupported), qt.IsTrue, qt.Commentf("got error: %s", err))
+	qt.Assert(t, qt.ErrorIs(err, ErrNotSupported), qt.Commentf("got error: %s", err))
 }
 
 func BenchmarkKprobeCreatePMU(b *testing.B) {
@@ -196,47 +186,45 @@ func BenchmarkKprobeCreatePMU(b *testing.B) {
 
 // Test tracefs k(ret)probe creation on all kernel versions.
 func TestKprobeTraceFS(t *testing.T) {
-	c := qt.New(t)
-
 	// Open and close tracefs k(ret)probes, checking all errors.
 	kp, err := tracefsProbe(tracefs.ProbeArgs{Type: tracefs.Kprobe, Symbol: ksym})
-	c.Assert(err, qt.IsNil)
-	c.Assert(kp.Close(), qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
+	qt.Assert(t, qt.IsNil(kp.Close()))
 
 	kp, err = tracefsProbe(tracefs.ProbeArgs{Type: tracefs.Kprobe, Symbol: ksym, Ret: true})
-	c.Assert(err, qt.IsNil)
-	c.Assert(kp.Close(), qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
+	qt.Assert(t, qt.IsNil(kp.Close()))
 
 	// Create two identical trace events, ensure their IDs differ.
 	k1, err := tracefsProbe(tracefs.ProbeArgs{Type: tracefs.Kprobe, Symbol: ksym})
-	c.Assert(err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 	defer k1.Close()
-	c.Assert(k1.tracefsEvent, qt.IsNotNil)
+	qt.Assert(t, qt.IsNotNil(k1.tracefsEvent))
 
 	k2, err := tracefsProbe(tracefs.ProbeArgs{Type: tracefs.Kprobe, Symbol: ksym})
-	c.Assert(err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 	defer k2.Close()
-	c.Assert(k2.tracefsEvent, qt.IsNotNil)
+	qt.Assert(t, qt.IsNotNil(k2.tracefsEvent))
 
 	// Compare the kprobes' tracefs IDs.
-	c.Assert(k1.tracefsEvent.ID(), qt.Not(qt.Equals), k2.tracefsEvent.ID())
+	qt.Assert(t, qt.Not(qt.Equals(k1.tracefsEvent.ID(), k2.tracefsEvent.ID())))
 
 	// Expect an error when supplying an invalid custom group name
 	_, err = tracefsProbe(tracefs.ProbeArgs{Type: tracefs.Kprobe, Symbol: ksym, Group: "/"})
-	c.Assert(err, qt.Not(qt.IsNil))
+	qt.Assert(t, qt.Not(qt.IsNil(err)))
 
 	cg := "customgroup"
 	k3, err := tracefsProbe(tracefs.ProbeArgs{Type: tracefs.Kprobe, Symbol: ksym, Group: cg})
-	c.Assert(err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 	defer k3.Close()
-	c.Assert(k3.tracefsEvent.Group(), qt.Matches, `customgroup_[a-f0-9]{16}`)
+	qt.Assert(t, qt.Matches(k3.tracefsEvent.Group(), `customgroup_[a-f0-9]{16}`))
 
 	// Prepare probe args.
 	args := tracefs.ProbeArgs{Type: tracefs.Kprobe, Group: "testgroup", Symbol: "symbol"}
 
 	// Write a k(ret)probe event for a non-existing symbol.
 	_, err = tracefs.NewEvent(args)
-	c.Assert(errors.Is(err, os.ErrNotExist), qt.IsTrue, qt.Commentf("got error: %s", err))
+	qt.Assert(t, qt.ErrorIs(err, os.ErrNotExist), qt.Commentf("got error: %s", err))
 
 	// A kernel bug was fixed in 97c753e62e6c where EINVAL was returned instead
 	// of ENOENT, but only for kretprobes.
@@ -263,20 +251,21 @@ func BenchmarkKprobeCreateTraceFS(b *testing.B) {
 }
 
 func TestKprobeProgramCall(t *testing.T) {
-	m, p := newUpdaterMapProg(t, ebpf.Kprobe, 0)
+	m, p := newUpdaterMapProg(t, gbpf.Kprobe, 0)
 
 	// Open Kprobe on `sys_getpid` and attach it
-	// to the ebpf program created above.
+	// to the gbpf program created above.
 	k, err := Kprobe("sys_getpid", p, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Trigger ebpf program call.
+	// Trigger gbpf program call.
 	unix.Getpid()
 
-	// Assert that the value at index 0 has been updated to 1.
-	assertMapValue(t, m, 0, 1)
+	// Assert that the value got incremented to at least 1, while allowing
+	// for bigger values, because we could race with other getpid callers.
+	assertMapValueGE(t, m, 0, 1)
 
 	// Detach the Kprobe.
 	if err := k.Close(); err != nil {
@@ -284,21 +273,21 @@ func TestKprobeProgramCall(t *testing.T) {
 	}
 
 	// Reset map value to 0 at index 0.
-	if err := m.Update(uint32(0), uint32(0), ebpf.UpdateExist); err != nil {
+	if err := m.Update(uint32(0), uint32(0), gbpf.UpdateExist); err != nil {
 		t.Fatal(err)
 	}
 
-	// Retrigger the ebpf program call.
+	// Retrigger the gbpf program call.
 	unix.Getpid()
 
 	// Assert that this time the value has not been updated.
 	assertMapValue(t, m, 0, 0)
 }
 
-func newUpdaterMapProg(t *testing.T, typ ebpf.ProgramType, attach ebpf.AttachType) (*ebpf.Map, *ebpf.Program) {
-	// Create ebpf map. Will contain only one key with initial value 0.
-	m, err := ebpf.NewMap(&ebpf.MapSpec{
-		Type:       ebpf.Array,
+func newUpdaterMapProg(t *testing.T, typ gbpf.ProgramType, attach gbpf.AttachType) (*gbpf.Map, *gbpf.Program) {
+	// Create gbpf map. Will contain only one key with initial value 0.
+	m, err := gbpf.NewMap(&gbpf.MapSpec{
+		Type:       gbpf.Array,
 		KeySize:    4,
 		ValueSize:  4,
 		MaxEntries: 1,
@@ -307,18 +296,31 @@ func newUpdaterMapProg(t *testing.T, typ ebpf.ProgramType, attach ebpf.AttachTyp
 		t.Fatal(err)
 	}
 
-	// Create ebpf program. When called, will set the value of key 0 in
-	// the map created above to 1.
-	p, err := ebpf.NewProgram(&ebpf.ProgramSpec{
+	// Create gbpf program. When called, will increase the value of key 0 by 1
+	// in the map created above.
+	p, err := gbpf.NewProgram(&gbpf.ProgramSpec{
 		Type: typ,
 		Instructions: asm.Instructions{
+			// R1 map
+			asm.LoadMapPtr(asm.R1, m.FD()),
+
+			// R2 key
+			asm.Mov.Reg(asm.R2, asm.R10),
+			asm.Add.Imm(asm.R2, -4),
+			asm.StoreImm(asm.R2, 0, 0, asm.Word),
+
+			// Lookup map[0]
+			asm.FnMapLookupElem.Call(),
+			asm.JEq.Imm(asm.R0, 0, "ret"),
+
+			// u32 val = R0++
+			asm.LoadMem(asm.R1, asm.R0, 0, asm.Word),
+			asm.Add.Imm(asm.R1, 1),
+			asm.StoreMem(asm.RFP, -8, asm.R1, asm.Word),
+
 			// u32 key = 0
 			asm.Mov.Imm(asm.R1, 0),
 			asm.StoreMem(asm.RFP, -4, asm.R1, asm.Word),
-
-			// u32 val = 1
-			asm.Mov.Imm(asm.R1, 1),
-			asm.StoreMem(asm.RFP, -8, asm.R1, asm.Word),
 
 			// bpf_map_update_elem(...)
 			asm.Mov.Reg(asm.R2, asm.RFP),
@@ -331,7 +333,7 @@ func newUpdaterMapProg(t *testing.T, typ ebpf.ProgramType, attach ebpf.AttachTyp
 
 			// exit 0
 			asm.Mov.Imm(asm.R0, 0),
-			asm.Return(),
+			asm.Return().WithSymbol("ret"),
 		},
 		AttachType: attach,
 		License:    "Dual MIT/GPL",
@@ -349,7 +351,7 @@ func newUpdaterMapProg(t *testing.T, typ ebpf.ProgramType, attach ebpf.AttachTyp
 	return m, p
 }
 
-func assertMapValue(t *testing.T, m *ebpf.Map, k, v uint32) {
+func assertMapValue(t *testing.T, m *gbpf.Map, k, v uint32) {
 	var val uint32
 	if err := m.Lookup(k, &val); err != nil {
 		t.Fatal(err)
@@ -359,10 +361,20 @@ func assertMapValue(t *testing.T, m *ebpf.Map, k, v uint32) {
 	}
 }
 
+func assertMapValueGE(t *testing.T, m *gbpf.Map, k, v uint32) {
+	var val uint32
+	if err := m.Lookup(k, &val); err != nil {
+		t.Fatal(err)
+	}
+	if val < v {
+		t.Fatalf("unexpected value: want >= '%d', got '%d'", v, val)
+	}
+}
+
 func TestKprobeCookie(t *testing.T) {
 	testutils.SkipOnOldKernel(t, "5.15", "bpf_perf_link")
 
-	prog := mustLoadProgram(t, ebpf.Kprobe, 0, "")
+	prog := mustLoadProgram(t, gbpf.Kprobe, 0, "")
 	k, err := Kprobe(ksym, prog, &KprobeOptions{Cookie: 1000})
 	if err != nil {
 		t.Fatal(err)

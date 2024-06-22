@@ -12,7 +12,7 @@ func TestAttachCgroup(t *testing.T) {
 
 	link, err := AttachCgroup(CgroupOptions{
 		Path:    cgroup.Name(),
-		Attach:  ebpf.AttachCGroupInetEgress,
+		Attach:  gbpf.AttachCGroupInetEgress,
 		Program: prog,
 	})
 	testutils.SkipIfNotSupported(t, err)
@@ -21,7 +21,7 @@ func TestAttachCgroup(t *testing.T) {
 	}
 	defer link.Close()
 
-	if haveBPFLink() == nil {
+	if havgBPFLink() == nil {
 		if _, ok := link.(*linkCgroup); !ok {
 			t.Fatalf("Have support for bpf_link, but got %T instead of linkCgroup", link)
 		}
@@ -35,7 +35,7 @@ func TestAttachCgroup(t *testing.T) {
 func TestProgAttachCgroup(t *testing.T) {
 	cgroup, prog := mustCgroupFixtures(t)
 
-	link, err := newProgAttachCgroup(cgroup, ebpf.AttachCGroupInetEgress, prog, 0)
+	link, err := newProgAttachCgroup(cgroup, gbpf.AttachCGroupInetEgress, prog, 0)
 	if err != nil {
 		t.Fatal("Can't create link:", err)
 	}
@@ -46,7 +46,7 @@ func TestProgAttachCgroup(t *testing.T) {
 func TestProgAttachCgroupAllowMulti(t *testing.T) {
 	cgroup, prog := mustCgroupFixtures(t)
 
-	link, err := newProgAttachCgroup(cgroup, ebpf.AttachCGroupInetEgress, prog, flagAllowMulti)
+	link, err := newProgAttachCgroup(cgroup, gbpf.AttachCGroupInetEgress, prog, flagAllowMulti)
 	testutils.SkipIfNotSupported(t, err)
 	if err != nil {
 		t.Fatal("Can't create link:", err)
@@ -54,14 +54,14 @@ func TestProgAttachCgroupAllowMulti(t *testing.T) {
 
 	// It's currently not possible for a program to replace
 	// itself.
-	prog2 := mustLoadProgram(t, ebpf.CGroupSKB, ebpf.AttachCGroupInetEgress, "")
+	prog2 := mustLoadProgram(t, gbpf.CGroupSKB, gbpf.AttachCGroupInetEgress, "")
 	testLink(t, link, prog2)
 }
 
 func TestLinkCgroup(t *testing.T) {
 	cgroup, prog := mustCgroupFixtures(t)
 
-	link, err := newLinkCgroup(cgroup, ebpf.AttachCGroupInetEgress, prog)
+	link, err := newLinkCgroup(cgroup, gbpf.AttachCGroupInetEgress, prog)
 	testutils.SkipIfNotSupported(t, err)
 	if err != nil {
 		t.Fatal("Can't create link:", err)

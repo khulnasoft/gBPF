@@ -1,4 +1,4 @@
-package ebpf
+package gbpf
 
 import (
 	"errors"
@@ -6,18 +6,18 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"testing"
 	"unsafe"
 
 	"github.com/khulnasoft/gbpf/asm"
+	"github.com/khulnasoft/gbpf/btf"
 	"github.com/khulnasoft/gbpf/internal"
 	"github.com/khulnasoft/gbpf/internal/sys"
 	"github.com/khulnasoft/gbpf/internal/testutils"
 	"github.com/khulnasoft/gbpf/internal/unix"
 
-	qt "github.com/frankban/quicktest"
+	"github.com/go-quicktest/qt"
 )
 
 var (
@@ -75,9 +75,13 @@ func TestMap(t *testing.T) {
 		t.Error("Want value 42, got", v)
 	}
 
+	sliceVal := make([]uint32, 1)
+	qt.Assert(t, qt.IsNil(m.Lookup(uint32(0), sliceVal)))
+	qt.Assert(t, qt.DeepEquals(sliceVal, []uint32{42}))
+
 	var slice []byte
-	qt.Assert(t, m.Lookup(uint32(0), &slice), qt.IsNil)
-	qt.Assert(t, slice, qt.DeepEquals, internal.NativeEndian.AppendUint32(nil, 42))
+	qt.Assert(t, qt.IsNil(m.Lookup(uint32(0), &slice)))
+	qt.Assert(t, qt.DeepEquals(slice, internal.NativeEndian.AppendUint32(nil, 42)))
 
 	var k uint32
 	if err := m.NextKey(uint32(0), &k); err != nil {
@@ -88,146 +92,148 @@ func TestMap(t *testing.T) {
 	}
 }
 
-func TestBatchAPIArray(t *testing.T) {
+func TestMapBatch(t *testing.T) {
 	if err := haveBatchAPI(); err != nil {
 		t.Skipf("batch api not available: %v", err)
 	}
-	m, err := NewMap(&MapSpec{
-		Type:       Array,
-		KeySize:    4,
-		ValueSize:  4,
-		MaxEntries: 2,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer m.Close()
 
-	var (
-		nextKey      uint32
-		keys         = []uint32{0, 1}
-		values       = []uint32{42, 4242}
-		lookupKeys   = make([]uint32, 2)
-		lookupValues = make([]uint32, 2)
-		deleteKeys   = make([]uint32, 2)
-		deleteValues = make([]uint32, 2)
-	)
-
-	count, err := m.BatchUpdate(keys, values, nil)
-	if err != nil {
-		t.Fatalf("BatchUpdate: %v", err)
-	}
-	if count != len(keys) {
-		t.Fatalf("BatchUpdate: expected count, %d, to be %d", count, len(keys))
+	contents := []uint32{
+		42, 4242, 23, 2323,
 	}
 
-	var v uint32
-	if err := m.Lookup(uint32(0), &v); err != nil {
-		t.Fatal("Can't lookup 0:", err)
-	}
-	if v != 42 {
-		t.Error("Want value 42, got", v)
-	}
-
-	count, err = m.BatchLookup(nil, &nextKey, lookupKeys, lookupValues, nil)
-	if err != nil {
-		t.Fatalf("BatchLookup: %v", err)
-	}
-	if count != len(lookupKeys) {
-		t.Fatalf("BatchLookup: returned %d results, expected %d", count, len(lookupKeys))
-	}
-	if nextKey != lookupKeys[1] {
-		t.Fatalf("BatchLookup: expected nextKey, %d, to be the same as the lastKey returned, %d", nextKey, lookupKeys[1])
-	}
-	if !reflect.DeepEqual(keys, lookupKeys) {
-		t.Errorf("BatchUpdate and BatchLookup keys disagree: %v %v", keys, lookupKeys)
-	}
-	if !reflect.DeepEqual(values, lookupValues) {
-		t.Errorf("BatchUpdate and BatchLookup values disagree: %v %v", values, lookupValues)
+	mustNewMap := func(t *testing.T, mapType MapType, max uint32) *Map {
+		m, err := NewMap(&MapSpec{
+			Type:       mapType,
+			KeySize:    4,
+			ValueSize:  4,
+			MaxEntries: max,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { m.Close() })
+		return m
 	}
 
-	_, err = m.BatchLookupAndDelete(nil, &nextKey, deleteKeys, deleteValues, nil)
-	if !errors.Is(err, ErrNotSupported) {
-		t.Fatalf("BatchLookUpDelete: expected error %v, but got %v", ErrNotSupported, err)
+	keysAndValuesForMap := func(m *Map, contents []uint32) (keys, values []uint32, stride int) {
+		possibleCPU := 1
+		if m.Type().hasPerCPUValue() {
+			possibleCPU = MustPossibleCPU()
+		}
+
+		keys = make([]uint32, 0, len(contents))
+		values = make([]uint32, 0, len(contents)*possibleCPU)
+		for key, value := range contents {
+			keys = append(keys, uint32(key))
+			for i := 0; i < possibleCPU; i++ {
+				values = append(values, value*uint32((i+1)))
+			}
+		}
+
+		return keys, values, possibleCPU
+	}
+
+	for _, typ := range []MapType{Array, PerCPUArray} {
+		t.Run(typ.String(), func(t *testing.T) {
+			if typ == PerCPUArray {
+				// https://lore.kernel.org/bpf/20210424214510.806627-2-pctammela@mojatatu.com/
+				testutils.SkipOnOldKernel(t, "5.13", "batched ops support for percpu array")
+			}
+
+			m := mustNewMap(t, typ, uint32(len(contents)))
+			keys, values, _ := keysAndValuesForMap(m, contents)
+			count, err := m.BatchUpdate(keys, values, nil)
+			qt.Assert(t, qt.IsNil(err))
+			qt.Assert(t, qt.Equals(count, len(contents)))
+
+			lookupKeys := make([]uint32, len(keys))
+			lookupValues := make([]uint32, len(values))
+
+			var cursor MapBatchCursor
+			count, err = m.BatchLookup(&cursor, lookupKeys, lookupValues, nil)
+			qt.Assert(t, qt.IsNil(err))
+			qt.Assert(t, qt.Equals(count, len(contents)))
+			qt.Assert(t, qt.ContentEquals(lookupKeys, keys))
+			qt.Assert(t, qt.ContentEquals(lookupValues, values))
+
+			count, err = m.BatchLookup(&cursor, lookupKeys, lookupValues, nil)
+			qt.Assert(t, qt.ErrorIs(err, ErrKeyNotExist))
+			qt.Assert(t, qt.Equals(count, 0))
+		})
+	}
+
+	for _, typ := range []MapType{Hash, PerCPUHash} {
+		t.Run(typ.String(), func(t *testing.T) {
+			m := mustNewMap(t, typ, uint32(len(contents)))
+			keys, values, stride := keysAndValuesForMap(m, contents)
+			count, err := m.BatchUpdate(keys, values, nil)
+			qt.Assert(t, qt.IsNil(err))
+			qt.Assert(t, qt.Equals(count, len(contents)))
+
+			// BPF hash tables seem to have lots of collisions when keys
+			// are following a sequence.
+			// This causes ENOSPC since a single large bucket may be larger
+			// than the batch size. We work around this by making the batch size
+			// equal to the map size.
+			lookupKeys := make([]uint32, len(keys))
+			lookupValues := make([]uint32, len(values))
+
+			var cursor MapBatchCursor
+			count, err = m.BatchLookup(&cursor, lookupKeys, lookupValues, nil)
+			qt.Assert(t, qt.ErrorIs(err, ErrKeyNotExist))
+			qt.Assert(t, qt.Equals(count, len(contents)))
+
+			qt.Assert(t, qt.ContentEquals(lookupKeys, keys))
+			qt.Assert(t, qt.ContentEquals(lookupValues, values))
+
+			cursor = MapBatchCursor{}
+			count, err = m.BatchLookupAndDelete(&cursor, lookupKeys, lookupValues, nil)
+			qt.Assert(t, qt.ErrorIs(err, ErrKeyNotExist))
+			qt.Assert(t, qt.Equals(count, len(contents)))
+
+			qt.Assert(t, qt.ContentEquals(lookupKeys, keys))
+			qt.Assert(t, qt.ContentEquals(lookupValues, values))
+
+			if stride > 1 {
+				values := make([]uint32, stride)
+				qt.Assert(t, qt.ErrorIs(m.Lookup(uint32(0), values), ErrKeyNotExist))
+			} else {
+				var v uint32
+				qt.Assert(t, qt.ErrorIs(m.Lookup(uint32(0), &v), ErrKeyNotExist))
+			}
+		})
 	}
 }
 
-func TestBatchAPIHash(t *testing.T) {
-	if err := haveBatchAPI(); err != nil {
-		t.Skipf("batch api not available: %v", err)
-	}
-	m, err := NewMap(&MapSpec{
-		Type:       Hash,
+func TestMapBatchCursorReuse(t *testing.T) {
+	spec := &MapSpec{
+		Type:       Array,
 		KeySize:    4,
 		ValueSize:  4,
-		MaxEntries: 10,
-	})
+		MaxEntries: 4,
+	}
+
+	arr1, err := NewMap(spec)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer m.Close()
+	defer arr1.Close()
 
-	var (
-		nextKey      uint32
-		keys         = []uint32{0, 1}
-		values       = []uint32{42, 4242}
-		lookupKeys   = make([]uint32, 2)
-		lookupValues = make([]uint32, 2)
-		deleteKeys   = make([]uint32, 2)
-		deleteValues = make([]uint32, 2)
-	)
-
-	count, err := m.BatchUpdate(keys, values, nil)
+	arr2, err := NewMap(spec)
 	if err != nil {
-		t.Fatalf("BatchUpdate: %v", err)
+		t.Fatal(err)
 	}
-	if count != len(keys) {
-		t.Fatalf("BatchUpdate: expected count, %d, to be %d", count, len(keys))
-	}
+	defer arr2.Close()
 
-	var v uint32
-	if err := m.Lookup(uint32(0), &v); err != nil {
-		t.Fatal("Can't lookup 0:", err)
-	}
-	if v != 42 {
-		t.Error("Want value 42, got", v)
-	}
+	tmp := make([]uint32, 2)
 
-	count, err = m.BatchLookup(nil, &nextKey, lookupKeys, lookupValues, nil)
-	if !errors.Is(err, ErrKeyNotExist) {
-		t.Fatalf("BatchLookup: expected %v got %v", ErrKeyNotExist, err)
-	}
-	if count != len(lookupKeys) {
-		t.Fatalf("BatchLookup: returned %d results, expected %d", count, len(lookupKeys))
-	}
-	sort.Slice(lookupKeys, func(i, j int) bool { return lookupKeys[i] < lookupKeys[j] })
-	if !reflect.DeepEqual(keys, lookupKeys) {
-		t.Errorf("BatchUpdate and BatchLookup keys disagree: %v %v", keys, lookupKeys)
-	}
-	sort.Slice(lookupValues, func(i, j int) bool { return lookupValues[i] < lookupValues[j] })
-	if !reflect.DeepEqual(values, lookupValues) {
-		t.Errorf("BatchUpdate and BatchLookup values disagree: %v %v", values, lookupValues)
-	}
+	var cursor MapBatchCursor
+	_, err = arr1.BatchLookup(&cursor, tmp, tmp, nil)
+	testutils.SkipIfNotSupported(t, err)
+	qt.Assert(t, qt.IsNil(err))
 
-	count, err = m.BatchLookupAndDelete(nil, &nextKey, deleteKeys, deleteValues, nil)
-	if !errors.Is(err, ErrKeyNotExist) {
-		t.Fatalf("BatchLookupAndDelete: expected %v got %v", ErrKeyNotExist, err)
-	}
-	if count != len(deleteKeys) {
-		t.Fatalf("BatchLookupAndDelete: returned %d results, expected %d", count, len(deleteKeys))
-	}
-	sort.Slice(deleteKeys, func(i, j int) bool { return deleteKeys[i] < deleteKeys[j] })
-	if !reflect.DeepEqual(keys, deleteKeys) {
-		t.Errorf("BatchUpdate and BatchLookupAndDelete keys disagree: %v %v", keys, deleteKeys)
-	}
-	sort.Slice(deleteValues, func(i, j int) bool { return deleteValues[i] < deleteValues[j] })
-	if !reflect.DeepEqual(values, deleteValues) {
-		t.Errorf("BatchUpdate and BatchLookupAndDelete values disagree: %v %v", values, deleteValues)
-	}
-
-	if err := m.Lookup(uint32(0), &v); !errors.Is(err, ErrKeyNotExist) {
-		t.Fatalf("Lookup should have failed with error, %v, instead error is %v", ErrKeyNotExist, err)
-	}
+	_, err = arr2.BatchLookup(&cursor, tmp, tmp, nil)
+	qt.Assert(t, qt.IsNotNil(err))
 }
 
 func TestMapLookupKeyTooSmall(t *testing.T) {
@@ -235,8 +241,8 @@ func TestMapLookupKeyTooSmall(t *testing.T) {
 	defer m.Close()
 
 	var small uint16
-	qt.Assert(t, m.Put(uint32(0), uint32(1234)), qt.IsNil)
-	qt.Assert(t, m.Lookup(uint32(0), &small), qt.IsNotNil)
+	qt.Assert(t, qt.IsNil(m.Put(uint32(0), uint32(1234))))
+	qt.Assert(t, qt.IsNotNil(m.Lookup(uint32(0), &small)))
 }
 
 func TestBatchAPIMapDelete(t *testing.T) {
@@ -306,101 +312,106 @@ func TestMapClose(t *testing.T) {
 
 func TestBatchMapWithLock(t *testing.T) {
 	testutils.SkipOnOldKernel(t, "5.13", "MAP BATCH BPF_F_LOCK")
-	testutils.Files(t, testutils.Glob(t, "./testdata/map_spin_lock-*.elf"), func(t *testing.T, file string) {
-		spec, err := LoadCollectionSpec(file)
-		if err != nil {
-			t.Fatal("Can't parse ELF:", err)
-		}
-		if spec.ByteOrder != internal.NativeEndian {
-			return
-		}
+	file := testutils.NativeFile(t, "testdata/map_spin_lock-%s.elf")
+	spec, err := LoadCollectionSpec(file)
+	if err != nil {
+		t.Fatal("Can't parse ELF:", err)
+	}
 
-		coll, err := NewCollection(spec)
-		if err != nil {
-			t.Fatal("Can't parse ELF:", err)
-		}
-		defer coll.Close()
+	coll, err := NewCollection(spec)
+	if err != nil {
+		t.Fatal("Can't parse ELF:", err)
+	}
+	defer coll.Close()
 
-		type spinLockValue struct {
-			Cnt     uint32
-			Padding uint32
-		}
+	type spinLockValue struct {
+		Cnt     uint32
+		Padding uint32
+	}
 
-		m, ok := coll.Maps["spin_lock_map"]
-		if !ok {
-			t.Fatal(err)
-		}
+	m, ok := coll.Maps["spin_lock_map"]
+	if !ok {
+		t.Fatal(err)
+	}
 
-		keys := []uint32{0, 1}
-		values := []spinLockValue{{Cnt: 42}, {Cnt: 4242}}
-		count, err := m.BatchUpdate(keys, values, &BatchOptions{ElemFlags: uint64(UpdateLock)})
-		if err != nil {
-			t.Fatalf("BatchUpdate: %v", err)
-		}
-		if count != len(keys) {
-			t.Fatalf("BatchUpdate: expected count, %d, to be %d", count, len(keys))
-		}
+	keys := []uint32{0, 1}
+	values := []spinLockValue{{Cnt: 42}, {Cnt: 4242}}
+	count, err := m.BatchUpdate(keys, values, &BatchOptions{ElemFlags: uint64(UpdateLock)})
+	if err != nil {
+		t.Fatalf("BatchUpdate: %v", err)
+	}
+	if count != len(keys) {
+		t.Fatalf("BatchUpdate: expected count, %d, to be %d", count, len(keys))
+	}
 
-		nextKey := uint32(0)
-		lookupKeys := make([]uint32, 2)
-		lookupValues := make([]spinLockValue, 2)
-		count, err = m.BatchLookup(nil, &nextKey, lookupKeys, lookupValues, &BatchOptions{ElemFlags: uint64(LookupLock)})
-		if !errors.Is(err, ErrKeyNotExist) {
-			t.Fatalf("BatchLookup: %v", err)
-		}
-		if count != 2 {
-			t.Fatalf("BatchLookup: expected two keys, got %d", count)
-		}
+	var cursor MapBatchCursor
+	lookupKeys := make([]uint32, 2)
+	lookupValues := make([]spinLockValue, 2)
+	count, err = m.BatchLookup(&cursor, lookupKeys, lookupValues, &BatchOptions{ElemFlags: uint64(LookupLock)})
+	if !errors.Is(err, ErrKeyNotExist) {
+		t.Fatalf("BatchLookup: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("BatchLookup: expected two keys, got %d", count)
+	}
 
-		nextKey = uint32(0)
-		deleteKeys := []uint32{0, 1}
-		deleteValues := make([]spinLockValue, 2)
-		count, err = m.BatchLookupAndDelete(nil, &nextKey, deleteKeys, deleteValues, nil)
-		if !errors.Is(err, ErrKeyNotExist) {
-			t.Fatalf("BatchLookupAndDelete: %v", err)
-		}
-		if count != 2 {
-			t.Fatalf("BatchLookupAndDelete: expected two keys, got %d", count)
-		}
-	})
+	cursor = MapBatchCursor{}
+	deleteKeys := []uint32{0, 1}
+	deleteValues := make([]spinLockValue, 2)
+	count, err = m.BatchLookupAndDelete(&cursor, deleteKeys, deleteValues, nil)
+	if !errors.Is(err, ErrKeyNotExist) {
+		t.Fatalf("BatchLookupAndDelete: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("BatchLookupAndDelete: expected two keys, got %d", count)
+	}
 }
 
 func TestMapWithLock(t *testing.T) {
 	testutils.SkipOnOldKernel(t, "5.13", "MAP BPF_F_LOCK")
-	testutils.Files(t, testutils.Glob(t, "./testdata/map_spin_lock-*.elf"), func(t *testing.T, file string) {
-		spec, err := LoadCollectionSpec(file)
-		if err != nil {
-			t.Fatal("Can't parse ELF:", err)
-		}
-		if spec.ByteOrder != internal.NativeEndian {
-			return
-		}
+	file := testutils.NativeFile(t, "testdata/map_spin_lock-%s.elf")
+	spec, err := LoadCollectionSpec(file)
+	if err != nil {
+		t.Fatal("Can't parse ELF:", err)
+	}
 
-		coll, err := NewCollection(spec)
-		if err != nil {
-			t.Fatal("Can't parse ELF:", err)
-		}
-		defer coll.Close()
+	coll, err := NewCollection(spec)
+	if err != nil {
+		t.Fatal("Can't parse ELF:", err)
+	}
+	defer coll.Close()
 
-		type spinLockValue struct {
-			Cnt     uint32
-			Padding uint32
-		}
+	type spinLockValue struct {
+		Cnt     uint32
+		Padding uint32
+	}
 
-		m, ok := coll.Maps["spin_lock_map"]
-		if !ok {
-			t.Fatal(err)
-		}
+	m, ok := coll.Maps["spin_lock_map"]
+	if !ok {
+		t.Fatal(err)
+	}
 
-		key := uint32(1)
-		value := spinLockValue{Cnt: 5}
-		err = m.Update(key, value, UpdateLock)
-		if err != nil {
-			t.Fatal(err)
-		}
+	key := uint32(1)
+	value := spinLockValue{Cnt: 5}
+	err = m.Update(key, value, UpdateLock)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	value.Cnt = 0
+	err = m.LookupWithFlags(&key, &value, LookupLock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.Cnt != 5 {
+		t.Fatalf("Want value 5, got %d", value.Cnt)
+	}
+
+	t.Run("LookupAndDelete", func(t *testing.T) {
+		testutils.SkipOnOldKernel(t, "5.14", "LOOKUP_AND_DELETE flags")
 
 		value.Cnt = 0
-		err = m.LookupWithFlags(&key, &value, LookupLock)
+		err = m.LookupAndDeleteWithFlags(&key, &value, LookupLock)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -408,23 +419,10 @@ func TestMapWithLock(t *testing.T) {
 			t.Fatalf("Want value 5, got %d", value.Cnt)
 		}
 
-		t.Run("LookupAndDelete", func(t *testing.T) {
-			testutils.SkipOnOldKernel(t, "5.14", "LOOKUP_AND_DELETE flags")
-
-			value.Cnt = 0
-			err = m.LookupAndDeleteWithFlags(&key, &value, LookupLock)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if value.Cnt != 5 {
-				t.Fatalf("Want value 5, got %d", value.Cnt)
-			}
-
-			err = m.LookupWithFlags(&key, &value, LookupLock)
-			if err != nil && !errors.Is(err, ErrKeyNotExist) {
-				t.Fatal(err)
-			}
-		})
+		err = m.LookupWithFlags(&key, &value, LookupLock)
+		if err != nil && !errors.Is(err, ErrKeyNotExist) {
+			t.Fatal(err)
+		}
 	})
 }
 
@@ -441,7 +439,6 @@ func TestMapCloneNil(t *testing.T) {
 
 func TestMapPin(t *testing.T) {
 	m := createArray(t)
-	c := qt.New(t)
 
 	if err := m.Put(uint32(0), uint32(42)); err != nil {
 		t.Fatal("Can't put:", err)
@@ -456,7 +453,7 @@ func TestMapPin(t *testing.T) {
 	}
 
 	pinned := m.IsPinned()
-	c.Assert(pinned, qt.IsTrue)
+	qt.Assert(t, qt.IsTrue(pinned))
 
 	m.Close()
 
@@ -495,7 +492,7 @@ func TestNestedMapPin(t *testing.T) {
 	}
 	defer m.Close()
 
-	tmp, err := os.MkdirTemp("/sys/fs/bpf", "ebpf-test")
+	tmp, err := os.MkdirTemp("/sys/fs/bpf", "gbpf-test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -538,7 +535,6 @@ func TestMapPinMultiple(t *testing.T) {
 	testutils.SkipOnOldKernel(t, "4.9", "atomic re-pinning was introduced in 4.9 series")
 
 	tmp := testutils.TempBPFFS(t)
-	c := qt.New(t)
 
 	spec := spec1.Copy()
 
@@ -548,35 +544,33 @@ func TestMapPinMultiple(t *testing.T) {
 	}
 	defer m1.Close()
 	pinned := m1.IsPinned()
-	c.Assert(pinned, qt.IsTrue)
+	qt.Assert(t, qt.IsTrue(pinned))
 
 	newPath := filepath.Join(tmp, "bar")
 	err = m1.Pin(newPath)
 	testutils.SkipIfNotSupported(t, err)
-	c.Assert(err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 	oldPath := filepath.Join(tmp, spec.Name)
 	if _, err := os.Stat(oldPath); err == nil {
 		t.Fatal("Previous pinned map path still exists:", err)
 	}
 	m2, err := LoadPinnedMap(newPath, nil)
-	c.Assert(err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 	pinned = m2.IsPinned()
-	c.Assert(pinned, qt.IsTrue)
+	qt.Assert(t, qt.IsTrue(pinned))
 	defer m2.Close()
 }
 
 func TestMapPinWithEmptyPath(t *testing.T) {
 	m := createArray(t)
-	c := qt.New(t)
 
 	err := m.Pin("")
 
-	c.Assert(err, qt.Not(qt.IsNil))
+	qt.Assert(t, qt.Not(qt.IsNil(err)))
 }
 
 func TestMapPinFailReplace(t *testing.T) {
 	tmp := testutils.TempBPFFS(t)
-	c := qt.New(t)
 	spec := spec1.Copy()
 	spec2 := spec1.Copy()
 	spec2.Name = spec1.Name + "bar"
@@ -591,16 +585,15 @@ func TestMapPinFailReplace(t *testing.T) {
 		t.Fatal("Failed to create map2:", err)
 	}
 	defer m2.Close()
-	c.Assert(m.IsPinned(), qt.IsTrue)
+	qt.Assert(t, qt.IsTrue(m.IsPinned()))
 	newPath := filepath.Join(tmp, spec2.Name)
 
-	c.Assert(m.Pin(newPath), qt.Not(qt.IsNil), qt.Commentf("Pin didn't"+
+	qt.Assert(t, qt.Not(qt.IsNil(m.Pin(newPath))), qt.Commentf("Pin didn't"+
 		" fail new path from replacing an existing path"))
 }
 
 func TestMapUnpin(t *testing.T) {
 	tmp := testutils.TempBPFFS(t)
-	c := qt.New(t)
 	spec := spec1.Copy()
 
 	m, err := NewMapWithOptions(spec, MapOptions{PinPath: tmp})
@@ -610,11 +603,11 @@ func TestMapUnpin(t *testing.T) {
 	defer m.Close()
 
 	pinned := m.IsPinned()
-	c.Assert(pinned, qt.IsTrue)
+	qt.Assert(t, qt.IsTrue(pinned))
 	path := filepath.Join(tmp, spec.Name)
 	m2, err := LoadPinnedMap(path, nil)
 	testutils.SkipIfNotSupported(t, err)
-	c.Assert(err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 	defer m2.Close()
 
 	if err = m.Unpin(); err != nil {
@@ -627,23 +620,22 @@ func TestMapUnpin(t *testing.T) {
 
 func TestMapLoadPinned(t *testing.T) {
 	tmp := testutils.TempBPFFS(t)
-	c := qt.New(t)
 
 	spec := spec1.Copy()
 
 	m1, err := NewMapWithOptions(spec, MapOptions{PinPath: tmp})
-	c.Assert(err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 	defer m1.Close()
 	pinned := m1.IsPinned()
-	c.Assert(pinned, qt.IsTrue)
+	qt.Assert(t, qt.IsTrue(pinned))
 
 	path := filepath.Join(tmp, spec.Name)
 	m2, err := LoadPinnedMap(path, nil)
 	testutils.SkipIfNotSupported(t, err)
-	c.Assert(err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 	defer m2.Close()
 	pinned = m2.IsPinned()
-	c.Assert(pinned, qt.IsTrue)
+	qt.Assert(t, qt.IsTrue(pinned))
 }
 
 func TestMapLoadReusePinned(t *testing.T) {
@@ -666,11 +658,11 @@ func TestMapLoadReusePinned(t *testing.T) {
 			}
 
 			m1, err := NewMapWithOptions(spec, MapOptions{PinPath: tmp})
-			qt.Assert(t, err, qt.IsNil)
+			qt.Assert(t, qt.IsNil(err))
 			defer m1.Close()
 
 			m2, err := NewMapWithOptions(spec, MapOptions{PinPath: tmp})
-			qt.Assert(t, err, qt.IsNil)
+			qt.Assert(t, qt.IsNil(err))
 			defer m2.Close()
 		})
 	}
@@ -678,25 +670,24 @@ func TestMapLoadReusePinned(t *testing.T) {
 
 func TestMapLoadPinnedUnpin(t *testing.T) {
 	tmp := testutils.TempBPFFS(t)
-	c := qt.New(t)
 
 	spec := spec1.Copy()
 
 	m1, err := NewMapWithOptions(spec, MapOptions{PinPath: tmp})
-	c.Assert(err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 	defer m1.Close()
 	pinned := m1.IsPinned()
-	c.Assert(pinned, qt.IsTrue)
+	qt.Assert(t, qt.IsTrue(pinned))
 
 	path := filepath.Join(tmp, spec.Name)
 	m2, err := LoadPinnedMap(path, nil)
 	testutils.SkipIfNotSupported(t, err)
-	c.Assert(err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 	defer m2.Close()
 	err = m1.Unpin()
-	c.Assert(err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 	err = m2.Unpin()
-	c.Assert(err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 }
 
 func TestMapLoadPinnedWithOptions(t *testing.T) {
@@ -763,7 +754,7 @@ func TestMapPinFlags(t *testing.T) {
 	m, err := NewMapWithOptions(spec, MapOptions{
 		PinPath: tmp,
 	})
-	qt.Assert(t, err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 	m.Close()
 
 	_, err = NewMapWithOptions(spec, MapOptions{
@@ -1099,6 +1090,60 @@ func TestMapIterate(t *testing.T) {
 	}
 }
 
+func TestMapIteratorAllocations(t *testing.T) {
+	arr, err := NewMap(&MapSpec{
+		Type:       Array,
+		KeySize:    4,
+		ValueSize:  4,
+		MaxEntries: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer arr.Close()
+
+	var k, v uint32
+	iter := arr.Iterate()
+
+	// AllocsPerRun warms up the function for us.
+	allocs := testing.AllocsPerRun(1, func() {
+		if !iter.Next(&k, &v) {
+			t.Fatal("Next failed")
+		}
+	})
+
+	qt.Assert(t, qt.Equals(allocs, float64(0)))
+}
+
+func TestMapBatchLookupAllocations(t *testing.T) {
+	testutils.SkipIfNotSupported(t, haveBatchAPI())
+
+	arr, err := NewMap(&MapSpec{
+		Type:       Array,
+		KeySize:    4,
+		ValueSize:  4,
+		MaxEntries: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer arr.Close()
+
+	var cursor MapBatchCursor
+	tmp := make([]uint32, 2)
+	input := any(tmp)
+
+	// AllocsPerRun warms up the function for us.
+	allocs := testing.AllocsPerRun(1, func() {
+		_, err := arr.BatchLookup(&cursor, input, input, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	qt.Assert(t, qt.Equals(allocs, 0))
+}
+
 func TestMapIterateHashKeyOneByteFull(t *testing.T) {
 	hash, err := NewMap(&MapSpec{
 		Type:       Hash,
@@ -1314,10 +1359,7 @@ func TestIterateMapInMap(t *testing.T) {
 func TestPerCPUMarshaling(t *testing.T) {
 	for _, typ := range []MapType{PerCPUHash, PerCPUArray, LRUCPUHash} {
 		t.Run(typ.String(), func(t *testing.T) {
-			numCPU, err := internal.PossibleCPUs()
-			if err != nil {
-				t.Fatal(err)
-			}
+			numCPU := MustPossibleCPU()
 			if numCPU < 2 {
 				t.Skip("Test requires at least two CPUs")
 			}
@@ -1348,6 +1390,16 @@ func TestPerCPUMarshaling(t *testing.T) {
 			}
 
 			// Make sure unmarshaling works on slices containing pointers
+			retrievedVal := make([]*customEncoding, numCPU)
+			if err := arr.Lookup(uint32(0), retrievedVal); err == nil {
+				t.Fatal("Slices with nil values should generate error")
+			}
+			for i := range retrievedVal {
+				retrievedVal[i] = &customEncoding{}
+			}
+			if err := arr.Lookup(uint32(0), retrievedVal); err != nil {
+				t.Fatal("Can't retrieve key 0:", err)
+			}
 			var retrieved []*customEncoding
 			if err := arr.Lookup(uint32(0), &retrieved); err != nil {
 				t.Fatal("Can't retrieve key 0:", err)
@@ -1372,10 +1424,7 @@ type bpfCgroupStorageKey struct {
 }
 
 func TestCgroupPerCPUStorageMarshaling(t *testing.T) {
-	numCPU, err := internal.PossibleCPUs()
-	if err != nil {
-		t.Fatal(err)
-	}
+	numCPU := MustPossibleCPU()
 	if numCPU < 2 {
 		t.Skip("Test requires at least two CPUs")
 	}
@@ -1413,11 +1462,11 @@ func TestCgroupPerCPUStorageMarshaling(t *testing.T) {
 	defer prog.Close()
 
 	progAttachAttrs := sys.ProgAttachAttr{
-		TargetFd:     uint32(cgroup.Fd()),
-		AttachBpfFd:  uint32(prog.FD()),
-		AttachType:   uint32(AttachCGroupInetEgress),
-		AttachFlags:  0,
-		ReplaceBpfFd: 0,
+		TargetFdOrIfindex: uint32(cgroup.Fd()),
+		AttachBpfFd:       uint32(prog.FD()),
+		AttachType:        uint32(AttachCGroupInetEgress),
+		AttachFlags:       0,
+		ReplacgBpfFd:      0,
 	}
 	err = sys.ProgAttach(&progAttachAttrs)
 	if err != nil {
@@ -1425,9 +1474,9 @@ func TestCgroupPerCPUStorageMarshaling(t *testing.T) {
 	}
 	defer func() {
 		attr := sys.ProgDetachAttr{
-			TargetFd:    uint32(cgroup.Fd()),
-			AttachBpfFd: uint32(prog.FD()),
-			AttachType:  uint32(AttachCGroupInetEgress),
+			TargetFdOrIfindex: uint32(cgroup.Fd()),
+			AttachBpfFd:       uint32(prog.FD()),
+			AttachType:        uint32(AttachCGroupInetEgress),
 		}
 		if err := sys.ProgDetach(&attr); err != nil {
 			t.Fatal(err)
@@ -1633,7 +1682,7 @@ func TestMapGetNextID(t *testing.T) {
 		t.Fatal("Expected next ID other than 0")
 	}
 
-	// As there can be multiple eBPF maps, we loop over all of them and
+	// As there can be multiple gBPF maps, we loop over all of them and
 	// make sure, the IDs increase and the last call will return ErrNotExist
 	for {
 		last := next
@@ -1678,7 +1727,6 @@ func TestNewMapFromID(t *testing.T) {
 
 func TestMapPinning(t *testing.T) {
 	tmp := testutils.TempBPFFS(t)
-	c := qt.New(t)
 
 	spec := &MapSpec{
 		Name:       "test",
@@ -1695,10 +1743,10 @@ func TestMapPinning(t *testing.T) {
 	}
 	defer m1.Close()
 	pinned := m1.IsPinned()
-	c.Assert(pinned, qt.IsTrue)
+	qt.Assert(t, qt.IsTrue(pinned))
 
 	m1Info, err := m1.Info()
-	c.Assert(err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 
 	if err := m1.Put(uint32(0), uint32(42)); err != nil {
 		t.Fatal("Can't write value:", err)
@@ -1712,11 +1760,11 @@ func TestMapPinning(t *testing.T) {
 	defer m2.Close()
 
 	m2Info, err := m2.Info()
-	c.Assert(err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 
 	if m1ID, ok := m1Info.ID(); ok {
 		m2ID, _ := m2Info.ID()
-		c.Assert(m2ID, qt.Equals, m1ID)
+		qt.Assert(t, qt.Equals(m2ID, m1ID))
 	}
 
 	var value uint32
@@ -1729,6 +1777,7 @@ func TestMapPinning(t *testing.T) {
 	}
 
 	spec.KeySize = 8
+	spec.ValueSize = 8
 	m3, err := NewMapWithOptions(spec, MapOptions{PinPath: tmp})
 	if err == nil {
 		m3.Close()
@@ -1737,6 +1786,38 @@ func TestMapPinning(t *testing.T) {
 	if !errors.Is(err, ErrMapIncompatible) {
 		t.Fatalf("Opening a pinned map with a mismatching spec failed with the wrong error")
 	}
+
+	// Check if error string mentions both KeySize and ValueSize.
+	qt.Assert(t, qt.StringContains(err.Error(), "KeySize"))
+	qt.Assert(t, qt.StringContains(err.Error(), "ValueSize"))
+}
+
+func TestMapHandle(t *testing.T) {
+	testutils.SkipOnOldKernel(t, "4.18", "btf_id in map info")
+
+	kv := &btf.Int{Size: 4}
+	m, err := NewMap(&MapSpec{
+		Type:       Hash,
+		KeySize:    kv.Size,
+		ValueSize:  kv.Size,
+		Key:        kv,
+		Value:      kv,
+		MaxEntries: 1,
+	})
+	qt.Assert(t, qt.IsNil(err))
+	defer m.Close()
+
+	h, err := m.Handle()
+	qt.Assert(t, qt.IsNil(err))
+	qt.Assert(t, qt.IsNotNil(h))
+	defer h.Close()
+
+	spec, err := h.Spec(nil)
+	qt.Assert(t, qt.IsNil(err))
+
+	typ, err := spec.TypeByID(1)
+	qt.Assert(t, qt.IsNil(err))
+	qt.Assert(t, qt.ContentEquals(typ, btf.Type(kv)))
 }
 
 func TestPerfEventArrayCompatible(t *testing.T) {
@@ -1745,13 +1826,13 @@ func TestPerfEventArrayCompatible(t *testing.T) {
 	}
 
 	m, err := NewMap(ms)
-	qt.Assert(t, err, qt.IsNil)
+	qt.Assert(t, qt.IsNil(err))
 	defer m.Close()
 
-	qt.Assert(t, ms.Compatible(m), qt.IsNil)
+	qt.Assert(t, qt.IsNil(ms.Compatible(m)))
 
 	ms.MaxEntries = m.MaxEntries() - 1
-	qt.Assert(t, ms.Compatible(m), qt.IsNotNil)
+	qt.Assert(t, qt.IsNotNil(ms.Compatible(m)))
 }
 
 type benchValue struct {
@@ -1888,27 +1969,26 @@ func BenchmarkMarshaling(b *testing.B) {
 }
 
 func BenchmarkPerCPUMarshalling(b *testing.B) {
-	newMap := func(valueSize uint32) *Map {
-		m, err := NewMap(&MapSpec{
-			Type:       PerCPUHash,
-			KeySize:    8,
-			ValueSize:  valueSize,
-			MaxEntries: 1,
-		})
-		if err != nil {
-			b.Fatal(err)
-		}
-		return m
+	key := uint64(1)
+	val := make([]uint64, MustPossibleCPU())
+	for i := range val {
+		val[i] = uint64(i)
 	}
 
-	key := uint64(1)
-	val := []uint64{1, 2, 3, 4, 5, 6, 7, 8}
+	m, err := NewMap(&MapSpec{
+		Type:       PerCPUHash,
+		KeySize:    8,
+		ValueSize:  8,
+		MaxEntries: 1,
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
 
-	m := newMap(8)
+	b.Cleanup(func() { m.Close() })
 	if err := m.Put(key, val[0:]); err != nil {
 		b.Fatal(err)
 	}
-	b.Cleanup(func() { m.Close() })
 
 	b.Run("reflection", func(b *testing.B) {
 		b.ReportAllocs()
@@ -1995,125 +2075,151 @@ func BenchmarkMap(b *testing.B) {
 }
 
 func BenchmarkIterate(b *testing.B) {
-	m, err := NewMap(&MapSpec{
-		Type:       Hash,
-		KeySize:    8,
-		ValueSize:  8,
-		MaxEntries: 1000,
-	})
-	if err != nil {
-		b.Fatal(err)
-	}
-	b.Cleanup(func() {
-		m.Close()
-	})
+	for _, mt := range []MapType{Hash, PerCPUHash} {
+		m, err := NewMap(&MapSpec{
+			Type:       mt,
+			KeySize:    8,
+			ValueSize:  8,
+			MaxEntries: 1000,
+		})
+		if err != nil {
+			b.Fatal(err)
+		}
+		b.Cleanup(func() {
+			m.Close()
+		})
+		possibleCPU := 1
+		if m.Type().hasPerCPUValue() {
+			possibleCPU = MustPossibleCPU()
+		}
+		var (
+			n      = m.MaxEntries()
+			keys   = make([]uint64, n)
+			values = make([]uint64, n*uint32(possibleCPU))
+		)
 
-	var (
-		n      = m.MaxEntries()
-		keys   = make([]uint64, n)
-		values = make([]uint64, n)
-	)
-
-	for i := 0; uint32(i) < n; i++ {
-		keys[i] = uint64(i)
-		values[i] = uint64(i)
-	}
-
-	if _, err := m.BatchUpdate(keys, values, nil); err != nil {
-		b.Fatal(err)
-	}
-
-	b.Run("MapIterator", func(b *testing.B) {
-		var k, v uint64
-
-		b.ReportAllocs()
-
-		for i := 0; i < b.N; i++ {
-			iter := m.Iterate()
-			for iter.Next(&k, &v) {
-				continue
-			}
-			if err := iter.Err(); err != nil {
-				b.Fatal(err)
+		for i := 0; uint32(i) < n; i++ {
+			keys[i] = uint64(i)
+			for j := 0; j < possibleCPU; j++ {
+				values[i] = uint64((i * possibleCPU) + j)
 			}
 		}
-	})
 
-	b.Run("MapIteratorDelete", func(b *testing.B) {
-		var k, v uint64
+		_, err = m.BatchUpdate(keys, values, nil)
+		testutils.SkipIfNotSupported(b, err)
+		qt.Assert(b, qt.IsNil(err))
 
-		b.ReportAllocs()
+		b.Run(m.Type().String(), func(b *testing.B) {
+			b.Run("MapIterator", func(b *testing.B) {
+				var k uint64
+				v := make([]uint64, possibleCPU)
 
-		for i := 0; i < b.N; i++ {
-			b.StopTimer()
-			if _, err := m.BatchUpdate(keys, values, nil); err != nil {
-				b.Fatal(err)
-			}
-			b.StartTimer()
+				b.ReportAllocs()
+				b.ResetTimer()
 
-			iter := m.Iterate()
-			for iter.Next(&k, &v) {
-				if err := m.Delete(&k); err != nil {
-					b.Fatal(err)
+				for i := 0; i < b.N; i++ {
+					iter := m.Iterate()
+					for iter.Next(&k, v) {
+						continue
+					}
+					if err := iter.Err(); err != nil {
+						b.Fatal(err)
+					}
 				}
-			}
-			if err := iter.Err(); err != nil {
-				b.Fatal(err)
-			}
-		}
-	})
+			})
 
-	b.Run("BatchLookup", func(b *testing.B) {
-		k := make([]uint64, m.MaxEntries())
-		v := make([]uint64, m.MaxEntries())
+			b.Run("MapIteratorDelete", func(b *testing.B) {
+				var k uint64
+				v := make([]uint64, possibleCPU)
 
-		b.ReportAllocs()
+				b.ReportAllocs()
+				b.ResetTimer()
 
-		for i := 0; i < b.N; i++ {
-			var next uint32
-			_, err := m.BatchLookup(nil, &next, k, v, nil)
-			if err != nil && !errors.Is(err, ErrKeyNotExist) {
-				b.Fatal(err)
-			}
-		}
-	})
+				for i := 0; i < b.N; i++ {
+					b.StopTimer()
+					if _, err := m.BatchUpdate(keys, values, nil); err != nil {
+						b.Fatal(err)
+					}
+					b.StartTimer()
 
-	b.Run("BatchLookupAndDelete", func(b *testing.B) {
-		k := make([]uint64, m.MaxEntries())
-		v := make([]uint64, m.MaxEntries())
+					iter := m.Iterate()
+					for iter.Next(&k, &v) {
+						if err := m.Delete(&k); err != nil {
+							b.Fatal(err)
+						}
+					}
+					if err := iter.Err(); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
 
-		b.ReportAllocs()
+			b.Run("BatchLookup", func(b *testing.B) {
+				k := make([]uint64, m.MaxEntries())
+				v := make([]uint64, m.MaxEntries()*uint32(possibleCPU))
 
-		for i := 0; i < b.N; i++ {
-			b.StopTimer()
-			if _, err := m.BatchUpdate(keys, values, nil); err != nil {
-				b.Fatal(err)
-			}
-			b.StartTimer()
+				b.ReportAllocs()
+				b.ResetTimer()
 
-			var next uint32
-			_, err := m.BatchLookupAndDelete(nil, &next, k, v, nil)
-			if err != nil && !errors.Is(err, ErrKeyNotExist) {
-				b.Fatal(err)
-			}
-		}
-	})
+				for i := 0; i < b.N; i++ {
+					var cursor MapBatchCursor
+					for {
+						_, err := m.BatchLookup(&cursor, k, v, nil)
+						if errors.Is(err, ErrKeyNotExist) {
+							break
+						}
+						if err != nil {
+							b.Fatal(err)
+						}
+					}
+				}
+			})
 
-	b.Run("BatchDelete", func(b *testing.B) {
-		b.ReportAllocs()
+			b.Run("BatchLookupAndDelete", func(b *testing.B) {
+				k := make([]uint64, m.MaxEntries())
+				v := make([]uint64, m.MaxEntries()*uint32(possibleCPU))
 
-		for i := 0; i < b.N; i++ {
-			b.StopTimer()
-			if _, err := m.BatchUpdate(keys, values, nil); err != nil {
-				b.Fatal(err)
-			}
-			b.StartTimer()
+				b.ReportAllocs()
+				b.ResetTimer()
 
-			if _, err := m.BatchDelete(keys, nil); err != nil {
-				b.Fatal(err)
-			}
-		}
-	})
+				for i := 0; i < b.N; i++ {
+					b.StopTimer()
+					if _, err := m.BatchUpdate(keys, values, nil); err != nil {
+						b.Fatal(err)
+					}
+					b.StartTimer()
+
+					var cursor MapBatchCursor
+					for {
+						_, err := m.BatchLookupAndDelete(&cursor, k, v, nil)
+						if errors.Is(err, ErrKeyNotExist) {
+							break
+						}
+						if err != nil {
+							b.Fatal(err)
+						}
+					}
+				}
+			})
+
+			b.Run("BatchDelete", func(b *testing.B) {
+				b.ReportAllocs()
+				b.ResetTimer()
+
+				for i := 0; i < b.N; i++ {
+					b.StopTimer()
+					if _, err := m.BatchUpdate(keys, values, nil); err != nil {
+						b.Fatal(err)
+					}
+					b.StartTimer()
+
+					if _, err := m.BatchDelete(keys, nil); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		})
+	}
 }
 
 // Per CPU maps store a distinct value for each CPU. They are useful
@@ -2130,39 +2236,58 @@ func ExampleMap_perCPU() {
 	}
 	defer arr.Close()
 
-	first := []uint32{4, 5}
-	if err := arr.Put(uint32(0), first); err != nil {
-		panic(err)
+	possibleCPUs := MustPossibleCPU()
+	perCPUValues := map[uint32]uint32{
+		0: 4,
+		1: 5,
 	}
 
-	second := []uint32{2, 8}
-	if err := arr.Put(uint32(1), second); err != nil {
-		panic(err)
+	for k, v := range perCPUValues {
+		// We set each perCPU slots to the same value.
+		values := make([]uint32, possibleCPUs)
+		for i := range values {
+			values[i] = v
+		}
+		if err := arr.Put(k, values); err != nil {
+			panic(err)
+		}
 	}
 
-	var values []uint32
-	if err := arr.Lookup(uint32(0), &values); err != nil {
-		panic(err)
+	for k := 0; k < 2; k++ {
+		var values []uint32
+		if err := arr.Lookup(uint32(k), &values); err != nil {
+			panic(err)
+		}
+		// Note we will print an unexpected message if this is not true.
+		fmt.Printf("Value of key %v on all CPUs: %v\n", k, values[0])
 	}
-	fmt.Println("First two values:", values[:2])
-
 	var (
 		key     uint32
 		entries = arr.Iterate()
 	)
 
+	var values []uint32
 	for entries.Next(&key, &values) {
-		// NB: sum can overflow, real code should check for this
-		var sum uint32
-		for _, n := range values {
-			sum += n
+		expected, ok := perCPUValues[key]
+		if !ok {
+			fmt.Printf("Unexpected key %v\n", key)
+			continue
 		}
-		fmt.Printf("Sum of %d: %d\n", key, sum)
+
+		for i, n := range values {
+			if n != expected {
+				fmt.Printf("Key %v, Value for cpu %v is %v not %v\n",
+					key, i, n, expected)
+			}
+		}
 	}
 
 	if err := entries.Err(); err != nil {
 		panic(err)
 	}
+	// Output:
+	// Value of key 0 on all CPUs: 4
+	// Value of key 1 on all CPUs: 5
 }
 
 // It is possible to use unsafe.Pointer to avoid marshalling
@@ -2205,31 +2330,34 @@ func ExampleMap_NextKey() {
 		KeySize:    5,
 		ValueSize:  4,
 		MaxEntries: 10,
+		Contents: []MapKV{
+			{"hello", uint32(21)},
+			{"world", uint32(42)},
+		},
 	})
 	if err != nil {
 		panic(err)
 	}
 	defer hash.Close()
 
-	if err := hash.Put("hello", uint32(21)); err != nil {
-		panic(err)
-	}
+	var cur, next string
+	var keys []string
 
-	if err := hash.Put("world", uint32(42)); err != nil {
-		panic(err)
-	}
-
-	var firstKey string
-	if err := hash.NextKey(nil, &firstKey); err != nil {
-		panic(err)
-	}
-
-	var nextKey string
-	if err := hash.NextKey(firstKey, &nextKey); err != nil {
-		panic(err)
+	for err = hash.NextKey(nil, &next); ; err = hash.NextKey(cur, &next) {
+		if errors.Is(err, ErrKeyNotExist) {
+			break
+		}
+		if err != nil {
+			panic(err)
+		}
+		keys = append(keys, next)
+		cur = next
 	}
 
 	// Order of keys is non-deterministic due to randomized map seed
+	sort.Strings(keys)
+	fmt.Printf("Keys are %v\n", keys)
+	// Output: Keys are [hello world]
 }
 
 // ExampleMap_Iterate demonstrates how to iterate over all entries
@@ -2240,19 +2368,15 @@ func ExampleMap_Iterate() {
 		KeySize:    5,
 		ValueSize:  4,
 		MaxEntries: 10,
+		Contents: []MapKV{
+			{"hello", uint32(21)},
+			{"world", uint32(42)},
+		},
 	})
 	if err != nil {
 		panic(err)
 	}
 	defer hash.Close()
-
-	if err := hash.Put("hello", uint32(21)); err != nil {
-		panic(err)
-	}
-
-	if err := hash.Put("world", uint32(42)); err != nil {
-		panic(err)
-	}
 
 	var (
 		key     string
@@ -2260,37 +2384,95 @@ func ExampleMap_Iterate() {
 		entries = hash.Iterate()
 	)
 
+	values := make(map[string]uint32)
 	for entries.Next(&key, &value) {
 		// Order of keys is non-deterministic due to randomized map seed
-		fmt.Printf("key: %s, value: %d\n", key, value)
+		values[key] = value
 	}
 
 	if err := entries.Err(); err != nil {
 		panic(fmt.Sprint("Iterator encountered an error:", err))
 	}
+
+	for k, v := range values {
+		fmt.Printf("key: %s, value: %d\n", k, v)
+	}
+
+	// Unordered output:
+	// key: hello, value: 21
+	// key: world, value: 42
 }
 
 // It is possible to iterate nested maps and program arrays by
 // unmarshaling into a *Map or *Program.
 func ExampleMap_Iterate_nestedMapsAndProgramArrays() {
-	var arrayOfMaps *Map // Set this up somehow
+	inner := &MapSpec{
+		Type:       Array,
+		KeySize:    4,
+		ValueSize:  4,
+		MaxEntries: 2,
+		Contents: []MapKV{
+			{uint32(0), uint32(1)},
+			{uint32(1), uint32(2)},
+		},
+	}
+	im, err := NewMap(inner)
+	if err != nil {
+		panic(err)
+	}
+	defer im.Close()
+
+	outer := &MapSpec{
+		Type:       ArrayOfMaps,
+		InnerMap:   inner,
+		KeySize:    4,
+		ValueSize:  4,
+		MaxEntries: 10,
+		Contents: []MapKV{
+			{uint32(0), im},
+		},
+	}
+	arrayOfMaps, err := NewMap(outer)
+	if errors.Is(err, internal.ErrNotSupported) {
+		// Fake the output if on very old kernel.
+		fmt.Println("outerKey: 0")
+		fmt.Println("\tinnerKey 0 innerValue 1")
+		fmt.Println("\tinnerKey 1 innerValue 2")
+		return
+	}
+	if err != nil {
+		panic(err)
+	}
+	defer arrayOfMaps.Close()
 
 	var (
 		key     uint32
 		m       *Map
 		entries = arrayOfMaps.Iterate()
 	)
-
-	// Make sure that the iterated map is closed after
-	// we are done.
-	defer m.Close()
-
 	for entries.Next(&key, &m) {
+		// Make sure that the iterated map is closed after
+		// we are done.
+		defer m.Close()
+
 		// Order of keys is non-deterministic due to randomized map seed
-		fmt.Printf("key: %v, map: %v\n", key, m)
+		fmt.Printf("outerKey: %v\n", key)
+
+		var innerKey, innerValue uint32
+		items := m.Iterate()
+		for items.Next(&innerKey, &innerValue) {
+			fmt.Printf("\tinnerKey %v innerValue %v\n", innerKey, innerValue)
+		}
+		if err := items.Err(); err != nil {
+			panic(fmt.Sprint("Inner Iterator encountered an error:", err))
+		}
 	}
 
 	if err := entries.Err(); err != nil {
 		panic(fmt.Sprint("Iterator encountered an error:", err))
 	}
+	// Output:
+	// outerKey: 0
+	//	innerKey 0 innerValue 1
+	// 	innerKey 1 innerValue 2
 }

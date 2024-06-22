@@ -1,16 +1,22 @@
 module github.com/khulnasoft/gbpf
 
-go 1.20
+go 1.21
 
 require (
-	github.com/frankban/quicktest v1.14.6
+	github.com/go-quicktest/qt v1.101.0
 	github.com/google/go-cmp v0.6.0
-	golang.org/x/exp v0.0.0-20231006140011-7918f672742d
-	golang.org/x/sys v0.13.0
+	github.com/jsimonetti/rtnetlink/v2 v2.0.1
+	golang.org/x/exp v0.0.0-20240613232115-7f521ea00fb8
+	golang.org/x/sys v0.21.0
 )
 
 require (
+	github.com/josharian/native v1.1.0 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/kr/text v0.2.0 // indirect
-	github.com/rogpeppe/go-internal v1.9.0 // indirect
+	github.com/mdlayher/netlink v1.7.2 // indirect
+	github.com/mdlayher/socket v0.4.1 // indirect
+	github.com/rogpeppe/go-internal v1.11.0 // indirect
+	golang.org/x/net v0.23.0 // indirect
+	golang.org/x/sync v0.7.0 // indirect
 )

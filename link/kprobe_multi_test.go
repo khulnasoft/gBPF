@@ -13,9 +13,9 @@ import (
 var kprobeMultiSyms = []string{"vprintk", "inet6_release"}
 
 func TestKprobeMulti(t *testing.T) {
-	testutils.SkipIfNotSupported(t, haveBPFLinkKprobeMulti())
+	testutils.SkipIfNotSupported(t, havgBPFLinkKprobeMulti())
 
-	prog := mustLoadProgram(t, ebpf.Kprobe, ebpf.AttachTraceKprobeMulti, "")
+	prog := mustLoadProgram(t, gbpf.Kprobe, gbpf.AttachTraceKprobeMulti, "")
 
 	km, err := KprobeMulti(prog, KprobeMultiOptions{Symbols: kprobeMultiSyms})
 	if err != nil {
@@ -28,7 +28,7 @@ func TestKprobeMulti(t *testing.T) {
 
 func TestKprobeMultiInput(t *testing.T) {
 	// Program type that loads on all kernels. Not expected to link successfully.
-	prog := mustLoadProgram(t, ebpf.SocketFilter, 0, "")
+	prog := mustLoadProgram(t, gbpf.SocketFilter, 0, "")
 
 	// One of Symbols or Addresses must be given.
 	_, err := KprobeMulti(prog, KprobeMultiOptions{})
@@ -56,9 +56,9 @@ func TestKprobeMultiInput(t *testing.T) {
 }
 
 func TestKprobeMultiErrors(t *testing.T) {
-	testutils.SkipIfNotSupported(t, haveBPFLinkKprobeMulti())
+	testutils.SkipIfNotSupported(t, havgBPFLinkKprobeMulti())
 
-	prog := mustLoadProgram(t, ebpf.Kprobe, ebpf.AttachTraceKprobeMulti, "")
+	prog := mustLoadProgram(t, gbpf.Kprobe, gbpf.AttachTraceKprobeMulti, "")
 
 	// Nonexistent kernel symbol.
 	_, err := KprobeMulti(prog, KprobeMultiOptions{Symbols: []string{"bogus"}})
@@ -76,9 +76,9 @@ func TestKprobeMultiErrors(t *testing.T) {
 }
 
 func TestKprobeMultiCookie(t *testing.T) {
-	testutils.SkipIfNotSupported(t, haveBPFLinkKprobeMulti())
+	testutils.SkipIfNotSupported(t, havgBPFLinkKprobeMulti())
 
-	prog := mustLoadProgram(t, ebpf.Kprobe, ebpf.AttachTraceKprobeMulti, "")
+	prog := mustLoadProgram(t, gbpf.Kprobe, gbpf.AttachTraceKprobeMulti, "")
 
 	km, err := KprobeMulti(prog, KprobeMultiOptions{
 		Symbols: kprobeMultiSyms,
@@ -91,24 +91,27 @@ func TestKprobeMultiCookie(t *testing.T) {
 }
 
 func TestKprobeMultiProgramCall(t *testing.T) {
-	testutils.SkipIfNotSupported(t, haveBPFLinkKprobeMulti())
+	testutils.SkipIfNotSupported(t, havgBPFLinkKprobeMulti())
 
-	m, p := newUpdaterMapProg(t, ebpf.Kprobe, ebpf.AttachTraceKprobeMulti)
+	m, p := newUpdaterMapProg(t, gbpf.Kprobe, gbpf.AttachTraceKprobeMulti)
 
 	// For simplicity, just assert the increment happens with any symbol in the array.
 	opts := KprobeMultiOptions{
-		Symbols: []string{"__do_sys_getpid"},
+		Symbols: []string{"__do_sys_getpid", "__do_sys_gettid"},
 	}
 	km, err := KprobeMulti(p, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Trigger ebpf program call.
+	// Trigger gbpf program call.
 	unix.Getpid()
+	unix.Gettid()
 
-	// Assert that the value at index 0 has been updated to 1.
-	assertMapValue(t, m, 0, 1)
+	// Assert that the value got incremented to at least 2, while allowing
+	// for bigger values, because we could race with other getpid/gettid
+	// callers.
+	assertMapValueGE(t, m, 0, 2)
 
 	// Close the link.
 	if err := km.Close(); err != nil {
@@ -116,17 +119,18 @@ func TestKprobeMultiProgramCall(t *testing.T) {
 	}
 
 	// Reset map value to 0 at index 0.
-	if err := m.Update(uint32(0), uint32(0), ebpf.UpdateExist); err != nil {
+	if err := m.Update(uint32(0), uint32(0), gbpf.UpdateExist); err != nil {
 		t.Fatal(err)
 	}
 
-	// Retrigger the ebpf program call.
+	// Retrigger the gbpf program call.
 	unix.Getpid()
+	unix.Gettid()
 
 	// Assert that this time the value has not been updated.
 	assertMapValue(t, m, 0, 0)
 }
 
-func TestHaveBPFLinkKprobeMulti(t *testing.T) {
-	testutils.CheckFeatureTest(t, haveBPFLinkKprobeMulti)
+func TestHavgBPFLinkKprobeMulti(t *testing.T) {
+	testutils.CheckFeatureTest(t, havgBPFLinkKprobeMulti)
 }

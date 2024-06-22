@@ -1,2 +1,2 @@
-// Package link allows attaching eBPF programs to various kernel hooks.
+// Package link allows attaching gBPF programs to various kernel hooks.
 package link

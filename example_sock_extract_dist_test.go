@@ -1,6 +1,6 @@
-package ebpf_test
+package gbpf_test
 
-// This code is derived from https://github.com/cloudflare/cloudflare-blog/tree/master/2018-03-ebpf
+// This code is derived from https://github.com/cloudflare/cloudflare-blog/tree/master/2018-03-gbpf
 //
 // Copyright (c) 2015-2017 Cloudflare, Inc. All rights reserved.
 //
@@ -39,7 +39,7 @@ import (
 	"github.com/khulnasoft/gbpf/asm"
 )
 
-// ExampleExtractDistance shows how to attach an eBPF socket filter to
+// ExampleExtractDistance shows how to attach an gBPF socket filter to
 // extract the network distance of an IP host.
 func Example_extractDistance() {
 	filter, TTLs, err := newDistanceFilter()
@@ -75,11 +75,11 @@ func Example_extractDistance() {
 	fmt.Println("1.1.1.1:53 is", minDist, "hops away")
 }
 
-func newDistanceFilter() (*ebpf.Program, *ebpf.Map, error) {
+func newDistanceFilter() (*gbpf.Program, *gbpf.Map, error) {
 	const ETH_P_IPV6 uint16 = 0x86DD
 
-	ttls, err := ebpf.NewMap(&ebpf.MapSpec{
-		Type:       ebpf.Hash,
+	ttls, err := gbpf.NewMap(&gbpf.MapSpec{
+		Type:       gbpf.Hash,
 		KeySize:    4,
 		ValueSize:  8,
 		MaxEntries: 4,
@@ -145,9 +145,9 @@ func newDistanceFilter() (*ebpf.Program, *ebpf.Map, error) {
 		asm.Return(),
 	}
 
-	prog, err := ebpf.NewProgram(&ebpf.ProgramSpec{
+	prog, err := gbpf.NewProgram(&gbpf.ProgramSpec{
 		Name:         "distance_filter",
-		Type:         ebpf.SocketFilter,
+		Type:         gbpf.SocketFilter,
 		License:      "GPL",
 		Instructions: insns,
 	})
@@ -159,7 +159,7 @@ func newDistanceFilter() (*ebpf.Program, *ebpf.Map, error) {
 	return prog, ttls, nil
 }
 
-func minDistance(TTLs *ebpf.Map) (int, error) {
+func minDistance(TTLs *gbpf.Map) (int, error) {
 	var (
 		entries = TTLs.Iterate()
 		ttl     uint32

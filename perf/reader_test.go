@@ -16,9 +16,8 @@ import (
 	"github.com/khulnasoft/gbpf/internal"
 	"github.com/khulnasoft/gbpf/internal/testutils"
 	"github.com/khulnasoft/gbpf/internal/testutils/fdtrace"
-	"github.com/khulnasoft/gbpf/internal/unix"
 
-	qt "github.com/frankban/quicktest"
+	"github.com/go-quicktest/qt"
 )
 
 var (
@@ -38,13 +37,19 @@ func TestPerfReader(t *testing.T) {
 	}
 	defer rd.Close()
 
-	outputSamples(t, events, 5)
+	qt.Assert(t, qt.Equals(rd.BufferSize(), 4096))
 
-	checkRecord(t, rd)
+	outputSamples(t, events, 5, 5)
+
+	_, rem := checkRecord(t, rd)
+	qt.Assert(t, qt.IsTrue(rem >= 5), qt.Commentf("expected at least 5 Remaining"))
+
+	_, rem = checkRecord(t, rd)
+	qt.Assert(t, qt.Equals(rem, 0), qt.Commentf("expected zero Remaining"))
 
 	rd.SetDeadline(time.Now().Add(4 * time.Millisecond))
 	_, err = rd.Read()
-	qt.Assert(t, errors.Is(err, os.ErrDeadlineExceeded), qt.IsTrue, qt.Commentf("expected os.ErrDeadlineExceeded"))
+	qt.Assert(t, qt.ErrorIs(err, os.ErrDeadlineExceeded), qt.Commentf("expected os.ErrDeadlineExceeded"))
 }
 
 func TestReaderSetDeadline(t *testing.T) {
@@ -65,7 +70,7 @@ func TestReaderSetDeadline(t *testing.T) {
 	}
 }
 
-func outputSamples(tb testing.TB, events *ebpf.Map, sampleSizes ...byte) {
+func outputSamples(tb testing.TB, events *gbpf.Map, sampleSizes ...byte) {
 	prog := outputSamplesProg(tb, events, sampleSizes...)
 
 	ret, _, err := prog.Test(internal.EmptyBPFContext)
@@ -88,7 +93,7 @@ func outputSamples(tb testing.TB, events *ebpf.Map, sampleSizes ...byte) {
 //
 // padding is an implementation detail of the perf buffer and 1-7 bytes long. The
 // contents are undefined.
-func outputSamplesProg(tb testing.TB, events *ebpf.Map, sampleSizes ...byte) *ebpf.Program {
+func outputSamplesProg(tb testing.TB, events *gbpf.Map, sampleSizes ...byte) *gbpf.Program {
 	tb.Helper()
 
 	// Requires at least 4.9 (0515e5999a46 "bpf: introduce BPF_PROG_TYPE_PERF_EVENT program type")
@@ -142,9 +147,9 @@ func outputSamplesProg(tb testing.TB, events *ebpf.Map, sampleSizes ...byte) *eb
 
 	insns = append(insns, asm.Return())
 
-	prog, err := ebpf.NewProgram(&ebpf.ProgramSpec{
+	prog, err := gbpf.NewProgram(&gbpf.ProgramSpec{
 		License:      "GPL",
-		Type:         ebpf.XDP,
+		Type:         gbpf.XDP,
 		Instructions: insns,
 	})
 	if err != nil {
@@ -155,24 +160,24 @@ func outputSamplesProg(tb testing.TB, events *ebpf.Map, sampleSizes ...byte) *eb
 	return prog
 }
 
-func checkRecord(tb testing.TB, rd *Reader) (id int) {
+func checkRecord(tb testing.TB, rd *Reader) (id int, remaining int) {
 	tb.Helper()
 
 	rec, err := rd.Read()
-	qt.Assert(tb, err, qt.IsNil)
+	qt.Assert(tb, qt.IsNil(err))
 
-	qt.Assert(tb, rec.CPU >= 0, qt.IsTrue, qt.Commentf("Record has invalid CPU number"))
+	qt.Assert(tb, qt.IsTrue(rec.CPU >= 0), qt.Commentf("Record has invalid CPU number"))
 
 	size := int(rec.RawSample[0])
-	qt.Assert(tb, len(rec.RawSample) >= size, qt.IsTrue, qt.Commentf("RawSample is at least size bytes"))
+	qt.Assert(tb, qt.IsTrue(len(rec.RawSample) >= size), qt.Commentf("RawSample is at least size bytes"))
 
 	for i, v := range rec.RawSample[2:size] {
-		qt.Assert(tb, v, qt.Equals, byte(0xff), qt.Commentf("filler at position %d should match", i+2))
+		qt.Assert(tb, qt.Equals(v, 0xff), qt.Commentf("filler at position %d should match", i+2))
 	}
 
 	// padding is ignored since it's value is undefined.
 
-	return int(rec.RawSample[1])
+	return int(rec.RawSample[1]), rec.Remaining
 }
 
 func TestPerfReaderLostSample(t *testing.T) {
@@ -296,17 +301,18 @@ func TestPerfReaderOverwritable(t *testing.T) {
 	defer rd.Close()
 
 	_, err = rd.Read()
-	qt.Assert(t, err, qt.ErrorIs, errMustBePaused)
+	qt.Assert(t, qt.ErrorIs(err, errMustBePaused))
 
 	outputSamples(t, events, sampleSizes...)
 
-	qt.Assert(t, rd.Pause(), qt.IsNil)
+	qt.Assert(t, qt.IsNil(rd.Pause()))
 	rd.SetDeadline(time.Now())
 
 	nextID := maxEvents
 	for i := 0; i < maxEvents; i++ {
-		id := checkRecord(t, rd)
-		qt.Assert(t, id, qt.Equals, nextID)
+		id, rem := checkRecord(t, rd)
+		qt.Assert(t, qt.Equals(id, nextID))
+		qt.Assert(t, qt.Equals(rem, -1))
 		nextID--
 	}
 }
@@ -326,7 +332,7 @@ func TestPerfReaderOverwritableEmpty(t *testing.T) {
 
 	rd.SetDeadline(time.Now().Add(4 * time.Millisecond))
 	_, err = rd.Read()
-	qt.Assert(t, errors.Is(err, os.ErrDeadlineExceeded), qt.IsTrue, qt.Commentf("expected os.ErrDeadlineExceeded"))
+	qt.Assert(t, qt.ErrorIs(err, os.ErrDeadlineExceeded), qt.Commentf("expected os.ErrDeadlineExceeded"))
 
 	err = rd.Resume()
 	if err != nil {
@@ -375,11 +381,11 @@ func TestPerfReaderClose(t *testing.T) {
 }
 
 func TestCreatePerfEvent(t *testing.T) {
-	fd, err := createPerfEvent(0, 1, false)
+	fd, err := createPerfEvent(0, ReaderOptions{Watermark: 1, Overwritable: false})
 	if err != nil {
 		t.Fatal("Can't create perf event:", err)
 	}
-	unix.Close(fd)
+	fd.Close()
 }
 
 func TestReadRecord(t *testing.T) {
@@ -474,12 +480,64 @@ func TestPause(t *testing.T) {
 
 	// Pause/Resume after close should be no-op.
 	err = rd.Pause()
-	qt.Assert(t, err, qt.Not(qt.Equals), ErrClosed, qt.Commentf("returns unwrapped ErrClosed"))
-	qt.Assert(t, errors.Is(err, ErrClosed), qt.IsTrue, qt.Commentf("doesn't wrap ErrClosed"))
+	qt.Assert(t, qt.Not(qt.Equals(err, ErrClosed)), qt.Commentf("returns unwrapped ErrClosed"))
+	qt.Assert(t, qt.ErrorIs(err, ErrClosed), qt.Commentf("doesn't wrap ErrClosed"))
 
 	err = rd.Resume()
-	qt.Assert(t, err, qt.Not(qt.Equals), ErrClosed, qt.Commentf("returns unwrapped ErrClosed"))
-	qt.Assert(t, errors.Is(err, ErrClosed), qt.IsTrue, qt.Commentf("doesn't wrap ErrClosed"))
+	qt.Assert(t, qt.Not(qt.Equals(err, ErrClosed)), qt.Commentf("returns unwrapped ErrClosed"))
+	qt.Assert(t, qt.ErrorIs(err, ErrClosed), qt.Commentf("doesn't wrap ErrClosed"))
+}
+
+func TestPerfReaderWakeupEvents(t *testing.T) {
+	testutils.LockOSThreadToSingleCPU(t)
+
+	events := perfEventArray(t)
+
+	numEvents := 2
+	rd, err := NewReaderWithOptions(events, 4096, ReaderOptions{WakeupEvents: numEvents})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rd.Close()
+
+	prog := outputSamplesProg(t, events, 5)
+
+	// Send enough events to trigger WakeupEvents.
+	for i := 0; i < numEvents; i++ {
+		_, _, err = prog.Test(internal.EmptyBPFContext)
+		testutils.SkipIfNotSupported(t, err)
+		qt.Assert(t, qt.IsNil(err))
+	}
+
+	time.AfterFunc(5*time.Second, func() {
+		// Interrupt Read() in case the implementation is buggy.
+		rd.Close()
+	})
+
+	for i := 0; i < numEvents; i++ {
+		checkRecord(t, rd)
+	}
+}
+
+func TestReadWithoutWakeup(t *testing.T) {
+	t.Parallel()
+
+	events := perfEventArray(t)
+
+	rd, err := NewReaderWithOptions(events, 1, ReaderOptions{WakeupEvents: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rd.Close()
+
+	prog := outputSamplesProg(t, events, 5)
+	ret, _, err := prog.Test(internal.EmptyBPFContext)
+	testutils.SkipIfNotSupported(t, err)
+	qt.Assert(t, qt.IsNil(err))
+	qt.Assert(t, qt.Equals(ret, 0))
+
+	rd.SetDeadline(time.Now())
+	checkRecord(t, rd)
 }
 
 func BenchmarkReader(b *testing.B) {
@@ -543,11 +601,11 @@ func BenchmarkReadInto(b *testing.B) {
 }
 
 // This exists just to make the example below nicer.
-func bpfPerfEventOutputProgram() (*ebpf.Program, *ebpf.Map) {
+func bpfPerfEventOutputProgram() (*gbpf.Program, *gbpf.Map) {
 	return nil, nil
 }
 
-// ExamplePerfReader submits a perf event using BPF,
+// ExampleReader submits a perf event using BPF,
 // and then reads it in user space.
 //
 // The BPF will look something like this:
@@ -622,9 +680,9 @@ func ExampleReader_ReadInto() {
 	}
 }
 
-func perfEventArray(tb testing.TB) *ebpf.Map {
-	events, err := ebpf.NewMap(&ebpf.MapSpec{
-		Type: ebpf.PerfEventArray,
+func perfEventArray(tb testing.TB) *gbpf.Map {
+	events, err := gbpf.NewMap(&gbpf.MapSpec{
+		Type: gbpf.PerfEventArray,
 	})
 	if err != nil {
 		tb.Fatal(err)

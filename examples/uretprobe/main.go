@@ -1,4 +1,4 @@
-// This program demonstrates how to attach an eBPF program to a uretprobe.
+// This program demonstrates how to attach an gBPF program to a uretprobe.
 // The program will be attached to the 'readline' symbol in the binary '/bin/bash' and print out
 // the line which 'readline' functions returns to the caller.
 
@@ -21,7 +21,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-//go:generate go run github.com/khulnasoft/gbpf/cmd/gbpf -target amd64 -type event bpf uretprobe.c -- -I../headers
+//go:generate go run github.com/khulnasoft/gbpf/cmd/bpf2go -target amd64 -type event bpf uretprobe.c -- -I../headers
 
 const (
 	// The path to the ELF binary containing the function to trace.
@@ -37,7 +37,7 @@ func main() {
 	stopper := make(chan os.Signal, 1)
 	signal.Notify(stopper, os.Interrupt, syscall.SIGTERM)
 
-	// Allow the current process to lock memory for eBPF resources.
+	// Allow the current process to lock memory for gBPF resources.
 	if err := rlimit.RemoveMemlock(); err != nil {
 		log.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func main() {
 	}
 
 	// Open a Uretprobe at the exit point of the symbol and attach
-	// the pre-compiled eBPF program to it.
+	// the pre-compiled gBPF program to it.
 	up, err := ex.Uretprobe(symbol, objs.UretprobeBashReadline, nil)
 	if err != nil {
 		log.Fatalf("creating uretprobe: %s", err)
@@ -64,7 +64,7 @@ func main() {
 	defer up.Close()
 
 	// Open a perf event reader from userspace on the PERF_EVENT_ARRAY map
-	// described in the eBPF C program.
+	// described in the gBPF C program.
 	rd, err := perf.NewReader(objs.Events, os.Getpagesize())
 	if err != nil {
 		log.Fatalf("creating perf event reader: %s", err)
