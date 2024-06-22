@@ -1466,7 +1466,7 @@ func TestCgroupPerCPUStorageMarshaling(t *testing.T) {
 		AttachBpfFd:       uint32(prog.FD()),
 		AttachType:        uint32(AttachCGroupInetEgress),
 		AttachFlags:       0,
-		ReplacgBpfFd:      0,
+		ReplaceBpfFd:      0,
 	}
 	err = sys.ProgAttach(&progAttachAttrs)
 	if err != nil {

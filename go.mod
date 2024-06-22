@@ -6,8 +6,8 @@ require (
 	github.com/go-quicktest/qt v1.101.0
 	github.com/google/go-cmp v0.6.0
 	github.com/jsimonetti/rtnetlink/v2 v2.0.1
-	golang.org/x/exp v0.0.0-20240613232115-7f521ea00fb8
-	golang.org/x/sys v0.21.0
+	golang.org/x/exp v0.0.0-20230224173230-c95f2b4c22f2
+	golang.org/x/sys v0.20.0
 )
 
 require (
@@ -18,5 +18,5 @@ require (
 	github.com/mdlayher/socket v0.4.1 // indirect
 	github.com/rogpeppe/go-internal v1.11.0 // indirect
 	golang.org/x/net v0.23.0 // indirect
-	golang.org/x/sync v0.7.0 // indirect
+	golang.org/x/sync v0.1.0 // indirect
 )
