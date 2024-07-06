@@ -11,39 +11,46 @@ jobs:
   tag-breaking-change:
     name: Tag breaking changes
     runs-on: ubuntu-latest
-    if: github.event.workflow_run.event == 'pull_request'
+    if: github.event.workflow_run.event == 'workflow_run'
     steps:
       - name: 'Download artifact'
         uses: actions/github-script@v7
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            var artifacts = await github.rest.actions.listWorkflowRunArtifacts({
-               owner: context.repo.owner,
-               repo: context.repo.repo,
-               run_id: ${{github.event.workflow_run.id }},
+            const { data: artifacts } = await github.rest.actions.listWorkflowRunArtifacts({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: context.payload.workflow_run.id,
             });
-            var matchArtifact = artifacts.data.artifacts.filter((artifact) => {
-              return artifact.name == "apidiff"
-            })[0];
-            var download = await github.rest.actions.downloadArtifact({
-               owner: context.repo.owner,
-               repo: context.repo.repo,
-               artifact_id: matchArtifact.id,
-               archive_format: 'zip',
+
+            const matchArtifact = artifacts.find(artifact => artifact.name === 'apidiff');
+
+            if (!matchArtifact) {
+              throw new Error('No matching artifact found');
+            }
+
+            const { data: artifactZip } = await github.rest.actions.downloadArtifact({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              artifact_id: matchArtifact.id,
+              archive_format: 'zip',
             });
-            var fs = require('fs');
-            fs.writeFileSync('${{github.workspace}}/apidiff.zip', Buffer.from(download.data));
-      - run: unzip apidiff.zip
+
+            const fs = require('fs');
+            fs.writeFileSync(`${process.env.GITHUB_WORKSPACE}/apidiff.zip`, Buffer.from(artifactZip));
+      - name: 'Unzip artifact'
+        run: unzip apidiff.zip
       - name: 'Add or remove label'
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            var fs = require('fs');
-            var jsonData = JSON.parse(fs.readFileSync('apidiff.json', 'utf8'));
+            const fs = require('fs');
+            const jsonData = JSON.parse(fs.readFileSync('apidiff.json', 'utf8'));
 
-            var issueNumber = jsonData.id;
-            var semverType = jsonData["semver-type"];
+            const issueNumber = jsonData.id;
+            const semverType = jsonData['semver-type'];
 
             if (semverType === 'major') {
               // Add 'breaking-change' label
@@ -51,7 +58,7 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: issueNumber,
-                labels: ['breaking-change']
+                labels: ['breaking-change'],
               });
             } else {
               // Remove 'breaking-change' label if it exists
@@ -60,7 +67,7 @@ jobs:
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: issueNumber,
-                  name: 'breaking-change'
+                  name: 'breaking-change',
                 });
               } catch (error) {
                 console.log('Label breaking-change not found or already removed');
