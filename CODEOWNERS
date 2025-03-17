@@ -1,11 +1,11 @@
 * @khulnasoft/gbpf-lib-maintainers
 
-features/ @rgo3
-link/ @mmat11
+features/ @khulnasoft-bot
+link/ @khulnasoft-bot
 
-perf/ @florianl
-ringbuf/ @florianl
+perf/ @khulnasoft-bot
+ringbuf/ @khulnasoft-bot
 
-btf/ @dylandreimerink
+btf/ @khulnasoft-bot
 
-docs/ @ti-mo
+docs/ @khulnasoft-bot
