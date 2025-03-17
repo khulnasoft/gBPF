@@ -3,7 +3,8 @@ package features
 import (
 	"errors"
 	"fmt"
-	"os"
+	"slices"
+	"strings"
 
 	"github.com/khulnasoft/gbpf"
 	"github.com/khulnasoft/gbpf/asm"
@@ -185,7 +186,7 @@ var haveProgramTypeMatrix = internal.FeatureMatrix[gbpf.ProgramType]{
 		Fn: func() error {
 			return probeProgram(&gbpf.ProgramSpec{
 				Type:  gbpf.Syscall,
-				Flags: unix.BPF_F_SLEEPABLE,
+				Flags: sys.BPF_F_SLEEPABLE,
 			})
 		},
 	},
@@ -229,10 +230,6 @@ var helperCache = internal.NewFeatureCache(func(key helperKey) *internal.Feature
 //
 // Probe results are cached and persist throughout any process capability changes.
 func HaveProgramHelper(pt gbpf.ProgramType, helper asm.BuiltinFunc) error {
-	if helper > helper.Max() {
-		return os.ErrInvalid
-	}
-
 	return helperCache.Result(helperKey{pt, helper})
 }
 
@@ -263,15 +260,22 @@ func haveProgramHelper(pt gbpf.ProgramType, helper asm.BuiltinFunc) error {
 	case gbpf.SkLookup:
 		spec.AttachType = gbpf.AttachSkLookup
 	case gbpf.Syscall:
-		spec.Flags = unix.BPF_F_SLEEPABLE
+		spec.Flags = sys.BPF_F_SLEEPABLE
 	}
 
 	prog, err := gbpf.NewProgramWithOptions(spec, gbpf.ProgramOptions{
-		LogDisabled: true,
+		LogLevel: 1,
 	})
 	if err == nil {
 		prog.Close()
 	}
+
+	var verr *gbpf.VerifierError
+	if !errors.As(err, &verr) {
+		return err
+	}
+
+	helperTag := fmt.Sprintf("#%d", helper)
 
 	switch {
 	// EACCES occurs when attempting to create a program probe with a helper
@@ -279,16 +283,38 @@ func haveProgramHelper(pt gbpf.ProgramType, helper asm.BuiltinFunc) error {
 	// We interpret this as the helper being available, because the verifier
 	// returns EINVAL if the helper is not supported by the running kernel.
 	case errors.Is(err, unix.EACCES):
-		// TODO: possibly we need to check verifier output here to be sure
 		err = nil
 
 	// EINVAL occurs when attempting to create a program with an unknown helper.
 	case errors.Is(err, unix.EINVAL):
-		// TODO: possibly we need to check verifier output here to be sure
-		err = gbpf.ErrNotSupported
+		// https://github.com/torvalds/linux/blob/09a0fa92e5b45e99cf435b2fbf5ebcf889cf8780/kernel/bpf/verifier.c#L10663
+		if logContainsAll(verr.Log, "invalid func", helperTag) {
+			return gbpf.ErrNotSupported
+		}
+
+		// https://github.com/torvalds/linux/blob/09a0fa92e5b45e99cf435b2fbf5ebcf889cf8780/kernel/bpf/verifier.c#L10668
+		wrongProgramType := logContainsAll(verr.Log, "program of this type cannot use helper", helperTag)
+		// https://github.com/torvalds/linux/blob/59b418c7063d30e0a3e1f592d47df096db83185c/kernel/bpf/verifier.c#L10204
+		// 4.9 doesn't include # in verifier output.
+		wrongProgramType = wrongProgramType || logContainsAll(verr.Log, "unknown func")
+		if wrongProgramType {
+			return fmt.Errorf("program of this type cannot use helper: %w", gbpf.ErrNotSupported)
+		}
 	}
 
 	return err
+}
+
+func logContainsAll(log []string, needles ...string) bool {
+	first := max(len(log)-5, 0) // Check last 5 lines.
+	return slices.ContainsFunc(log[first:], func(line string) bool {
+		for _, needle := range needles {
+			if !strings.Contains(line, needle) {
+				return false
+			}
+		}
+		return true
+	})
 }
 
 func helperProbeNotImplemented(pt gbpf.ProgramType) bool {

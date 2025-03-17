@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/go-quicktest/qt"
+
 	"github.com/khulnasoft/gbpf"
 	"github.com/khulnasoft/gbpf/internal/testutils"
 )
@@ -96,12 +97,13 @@ func TestUprobeMultiInput(t *testing.T) {
 
 	// PID not found
 	_, err = bashEx.UprobeMulti(bashSyms, prog, &UprobeMultiOptions{
-		PID: math.MaxUint32,
+		// pid_t is int32, overflowing it will return EINVAL.
+		PID: math.MaxInt32,
 	})
 	qt.Assert(t, qt.ErrorIs(err, os.ErrNotExist))
 
 	_, err = bashEx.UretprobeMulti(bashSyms, prog, &UprobeMultiOptions{
-		PID: math.MaxUint32,
+		PID: math.MaxInt32,
 	})
 	qt.Assert(t, qt.ErrorIs(err, os.ErrNotExist))
 }

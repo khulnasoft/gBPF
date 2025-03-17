@@ -41,12 +41,9 @@ func TestFindReferences(t *testing.T) {
 
 	flattenPrograms(progs, []string{"entrypoint"})
 
-	prog, err := NewProgram(progs["entrypoint"])
+	prog, err := newProgram(t, progs["entrypoint"], nil)
 	testutils.SkipIfNotSupported(t, err)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer prog.Close()
+	qt.Assert(t, qt.IsNil(err))
 
 	ret, _, err := prog.Test(internal.EmptyBPFContext)
 	if err != nil {
@@ -68,7 +65,7 @@ func TestForwardFunctionDeclaration(t *testing.T) {
 	spec := coll.Programs["call_fwd"]
 
 	// This program calls an unimplemented forward function declaration.
-	_, err = NewProgram(spec)
+	_, err = newProgram(t, spec, nil)
 	if !errors.Is(err, asm.ErrUnsatisfiedProgramReference) {
 		t.Fatal("Expected an error wrapping ErrUnsatisfiedProgramReference, got:", err)
 	}
@@ -90,12 +87,9 @@ func TestForwardFunctionDeclaration(t *testing.T) {
 		}
 	}
 
-	prog, err := NewProgram(spec)
+	prog, err := newProgram(t, spec, nil)
 	testutils.SkipIfNotSupported(t, err)
-	if err != nil {
-		t.Fatalf("%+v", err)
-	}
-	defer prog.Close()
+	qt.Assert(t, qt.IsNil(err))
 
 	ret, _, err := prog.Test(internal.EmptyBPFContext)
 	if err != nil {
@@ -158,4 +152,25 @@ func TestSplitSymbols(t *testing.T) {
 	qt.Assert(t, qt.HasLen(m["sym2"], 2))
 	qt.Assert(t, qt.HasLen(m["sym3"], 3))
 	qt.Assert(t, qt.HasLen(m["sym4"], 4))
+}
+
+func TestFlattenInstructionsAllocations(t *testing.T) {
+	name := "entrypoint"
+	instructions := asm.Instructions{
+		asm.LoadImm(asm.R0, 0, asm.DWord),
+		asm.Return(),
+	}
+	prog := &ProgramSpec{
+		Name:         name,
+		Instructions: instructions,
+	}
+	progs := map[string]*ProgramSpec{name: prog}
+	refs := make(map[*ProgramSpec][]string)
+
+	// ensure that flattenInstructions does not allocate memory
+	// if there is no reference for the given program.
+	allocs := testing.AllocsPerRun(5, func() {
+		_ = flattenInstructions(name, progs, refs)
+	})
+	qt.Assert(t, qt.Equals(allocs, float64(0)))
 }

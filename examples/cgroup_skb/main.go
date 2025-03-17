@@ -1,3 +1,5 @@
+//go:build linux
+
 // This program demonstrates attaching an gBPF program to a control group.
 // The gBPF program will be attached as an egress filter,
 // receiving an `__sk_buff` pointer for each outgoing packet.
@@ -17,7 +19,7 @@ import (
 	"github.com/khulnasoft/gbpf/rlimit"
 )
 
-//go:generate go run github.com/khulnasoft/gbpf/cmd/bpf2go bpf cgroup_skb.c -- -I../headers
+//go:generate go run github.com/khulnasoft/gbpf/cmd/bpf2go -tags linux bpf cgroup_skb.c -- -I../headers
 
 func main() {
 	// Allow the current process to lock memory for gBPF resources.

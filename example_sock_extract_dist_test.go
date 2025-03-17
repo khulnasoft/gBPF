@@ -1,3 +1,5 @@
+//go:build linux
+
 package gbpf_test
 
 // This code is derived from https://github.com/cloudflare/cloudflare-blog/tree/master/2018-03-gbpf

@@ -8,9 +8,10 @@ import (
 	"github.com/go-quicktest/qt"
 	"github.com/jsimonetti/rtnetlink/v2"
 	"github.com/jsimonetti/rtnetlink/v2/driver"
+
 	"github.com/khulnasoft/gbpf"
 	"github.com/khulnasoft/gbpf/internal/testutils"
-	"golang.org/x/sys/unix"
+	"github.com/khulnasoft/gbpf/internal/unix"
 )
 
 func TestAttachNetkit(t *testing.T) {

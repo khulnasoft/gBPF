@@ -1,3 +1,5 @@
+//go:build linux
+
 // This program demonstrates attaching an gBPF program to a kernel tracepoint.
 // The gBPF program will be attached to the page allocation tracepoint and
 // prints out the number of times it has been reached. The tracepoint fields
@@ -12,7 +14,7 @@ import (
 	"github.com/khulnasoft/gbpf/rlimit"
 )
 
-//go:generate go run github.com/khulnasoft/gbpf/cmd/bpf2go bpf tracepoint.c -- -I../headers
+//go:generate go run github.com/khulnasoft/gbpf/cmd/bpf2go -tags linux bpf tracepoint.c -- -I../headers
 
 const mapKey uint32 = 0
 

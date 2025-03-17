@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 import (
@@ -9,13 +11,14 @@ import (
 	"os/signal"
 	"syscall"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/khulnasoft/gbpf/link"
 	"github.com/khulnasoft/gbpf/ringbuf"
 	"github.com/khulnasoft/gbpf/rlimit"
-	"golang.org/x/sys/unix"
 )
 
-//go:generate go run github.com/khulnasoft/gbpf/cmd/bpf2go -type event bpf ringbuffer.c -- -I../headers
+//go:generate go run github.com/khulnasoft/gbpf/cmd/bpf2go -tags linux -type event bpf ringbuffer.c -- -I../headers
 
 func main() {
 	// Name of the kernel function to trace.

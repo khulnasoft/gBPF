@@ -53,6 +53,7 @@ This library includes the following packages:
 * [rlimit](https://pkg.go.dev/github.com/khulnasoft/gbpf/rlimit) provides a convenient API to lift
   the `RLIMIT_MEMLOCK` constraint on kernels before 5.11.
 * [btf](https://pkg.go.dev/github.com/khulnasoft/gbpf/btf) allows reading the BPF Type Format.
+* [pin](https://pkg.go.dev/github.com/khulnasoft/gbpf/pin) provides APIs for working with pinned objects on bpffs.
 
 ## Requirements
 

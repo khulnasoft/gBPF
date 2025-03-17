@@ -5,6 +5,8 @@ import (
 	"os"
 	"testing"
 
+	"github.com/go-quicktest/qt"
+
 	"github.com/khulnasoft/gbpf"
 	"github.com/khulnasoft/gbpf/internal/testutils"
 	"github.com/khulnasoft/gbpf/internal/unix"
@@ -68,10 +70,11 @@ func TestKprobeMultiErrors(t *testing.T) {
 
 	// Only have a negative test for addresses as it would be hard to maintain a
 	// proper one.
-	if _, err := KprobeMulti(prog, KprobeMultiOptions{
+	_, err = KprobeMulti(prog, KprobeMultiOptions{
 		Addresses: []uintptr{^uintptr(0)},
-	}); !errors.Is(err, unix.EINVAL) {
-		t.Fatalf("expected EINVAL, got: %s", err)
+	})
+	if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, unix.EINVAL) {
+		t.Fatalf("expected ErrNotExist or EINVAL, got: %s", err)
 	}
 }
 
@@ -133,4 +136,21 @@ func TestKprobeMultiProgramCall(t *testing.T) {
 
 func TestHavgBPFLinkKprobeMulti(t *testing.T) {
 	testutils.CheckFeatureTest(t, havgBPFLinkKprobeMulti)
+}
+
+func TestKprobeSession(t *testing.T) {
+	testutils.SkipIfNotSupported(t, havgBPFLinkKprobeMulti())
+
+	prog := mustLoadProgram(t, gbpf.Kprobe, gbpf.AttachTraceKprobeSession, "")
+
+	km, err := KprobeMulti(prog, KprobeMultiOptions{Symbols: kprobeMultiSyms, Session: true})
+	testutils.SkipIfNotSupported(t, err)
+	qt.Assert(t, qt.IsNil(err))
+	defer km.Close()
+
+	testLink(t, km, prog)
+}
+
+func TestHavgBPFLinkKprobeSession(t *testing.T) {
+	testutils.CheckFeatureTest(t, havgBPFLinkKprobeSession)
 }

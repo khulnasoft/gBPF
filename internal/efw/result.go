@@ -1,0 +1,57 @@
+//go:build windows
+
+package efw
+
+// See https://github.com/microsoft/gbpf-for-windows/blob/main/include/gbpf_result.h
+type Result int32
+
+//go:generate go run golang.org/x/tools/cmd/stringer@latest -tags windows -output result_string_windows.go -type=Result
+
+const (
+	GBPF_SUCCESS Result = iota
+	GBPF_VERIFICATION_FAILED
+	GBPF_JIT_COMPILATION_FAILED
+	GBPF_PROGRAM_LOAD_FAILED
+	GBPF_INVALID_FD
+	GBPF_INVALID_OBJECT
+	GBPF_INVALID_ARGUMENT
+	GBPF_OBJECT_NOT_FOUND
+	GBPF_OBJECT_ALREADY_EXISTS
+	GBPF_FILE_NOT_FOUND
+	GBPF_ALREADY_PINNED
+	GBPF_NOT_PINNED
+	GBPF_NO_MEMORY
+	GBPF_PROGRAM_TOO_LARGE
+	GBPF_RPC_EXCEPTION
+	GBPF_ALREADY_INITIALIZED
+	GBPF_ELF_PARSING_FAILED
+	GBPF_FAILED
+	GBPF_OPERATION_NOT_SUPPORTED
+	GBPF_KEY_NOT_FOUND
+	GBPF_ACCESS_DENIED
+	GBPF_BLOCKED_BY_POLICY
+	GBPF_ARITHMETIC_OVERFLOW
+	GBPF_EXTENSION_FAILED_TO_LOAD
+	GBPF_INSUFFICIENT_BUFFER
+	GBPF_NO_MORE_KEYS
+	GBPF_KEY_ALREADY_EXISTS
+	GBPF_NO_MORE_TAIL_CALLS
+	GBPF_PENDING
+	GBPF_OUT_OF_SPACE
+	GBPF_CANCELED
+	GBPF_INVALID_POINTER
+	GBPF_TIMEOUT
+	GBPF_STALE_ID
+	GBPF_INVALID_STATE
+)
+
+func (r Result) Error() string {
+	return r.String()
+}
+
+func resultToError(res Result) error {
+	if res == GBPF_SUCCESS {
+		return nil
+	}
+	return res
+}

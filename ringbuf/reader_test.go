@@ -1,3 +1,5 @@
+//go:build linux
+
 package ringbuf
 
 import (
@@ -7,13 +9,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-quicktest/qt"
 	"github.com/google/go-cmp/cmp"
+
 	"github.com/khulnasoft/gbpf"
 	"github.com/khulnasoft/gbpf/asm"
 	"github.com/khulnasoft/gbpf/internal"
+	"github.com/khulnasoft/gbpf/internal/sys"
 	"github.com/khulnasoft/gbpf/internal/testutils"
-	"github.com/khulnasoft/gbpf/internal/testutils/fdtrace"
-	"github.com/khulnasoft/gbpf/internal/unix"
+	"github.com/khulnasoft/gbpf/internal/testutils/testmain"
 )
 
 type sampleMessage struct {
@@ -22,7 +26,7 @@ type sampleMessage struct {
 }
 
 func TestMain(m *testing.M) {
-	fdtrace.TestMain(m)
+	testmain.Run(m)
 }
 
 func TestRingbufReader(t *testing.T) {
@@ -48,6 +52,15 @@ func TestRingbufReader(t *testing.T) {
 				15: {1, 2, 3, 4, 4, 3, 2, 1, 1, 2, 3, 4, 4, 3, 2},
 			},
 		},
+		{
+			name:     "send five samples, every even is discarded",
+			messages: []sampleMessage{{size: 5}, {size: 10}, {size: 15}, {size: 20}, {size: 25}},
+			want: map[int][]byte{
+				5:  {1, 2, 3, 4, 4},
+				15: {1, 2, 3, 4, 4, 3, 2, 1, 1, 2, 3, 4, 4, 3, 2},
+				25: {1, 2, 3, 4, 4, 3, 2, 1, 1, 2, 3, 4, 4, 3, 2, 1, 1, 2, 3, 4, 4, 3, 2, 1, 1},
+			},
+		},
 	}
 	for _, tt := range readerTests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -59,7 +72,9 @@ func TestRingbufReader(t *testing.T) {
 			}
 			defer rd.Close()
 
-			if uint32(rd.BufferSize()) != 2*events.MaxEntries() {
+			qt.Assert(t, qt.Equals(rd.AvailableBytes(), 0))
+
+			if uint32(rd.BufferSize()) != events.MaxEntries() {
 				t.Errorf("expected %d BufferSize, got %d", events.MaxEntries(), rd.BufferSize())
 			}
 
@@ -72,6 +87,12 @@ func TestRingbufReader(t *testing.T) {
 			if errno := syscall.Errno(-int32(ret)); errno != 0 {
 				t.Fatal("Expected 0 as return value, got", errno)
 			}
+
+			var avail int
+			for _, m := range tt.messages {
+				avail += ringbufHeaderSize + internal.Align(m.size, 8)
+			}
+			qt.Assert(t, qt.Equals(rd.AvailableBytes(), avail))
 
 			raw := make(map[int][]byte)
 
@@ -257,9 +278,66 @@ func TestReaderNoWakeup(t *testing.T) {
 	testutils.SkipOnOldKernel(t, "5.8", "BPF ring buffer")
 
 	prog, events := mustOutputSamplesProg(t,
-		sampleMessage{size: 5, flags: unix.BPF_RB_NO_WAKEUP}, // Read after timeout
-		sampleMessage{size: 6, flags: unix.BPF_RB_NO_WAKEUP}, // Discard
-		sampleMessage{size: 7, flags: unix.BPF_RB_NO_WAKEUP}) // Read won't block
+		sampleMessage{size: 5, flags: sys.BPF_RB_NO_WAKEUP}, // Read after timeout
+		sampleMessage{size: 6, flags: sys.BPF_RB_NO_WAKEUP}, // Discard
+		sampleMessage{size: 7, flags: sys.BPF_RB_NO_WAKEUP}) // Read won't block
+
+	rd, err := NewReader(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rd.Close()
+
+	qt.Assert(t, qt.Equals(rd.AvailableBytes(), 0))
+
+	ret, _, err := prog.Test(internal.EmptyBPFContext)
+	testutils.SkipIfNotSupported(t, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	qt.Assert(t, qt.Equals(rd.AvailableBytes(), 3*16))
+
+	if errno := syscall.Errno(-int32(ret)); errno != 0 {
+		t.Fatal("Expected 0 as return value, got", errno)
+	}
+
+	rd.SetDeadline(time.Now())
+	record, err := rd.Read()
+
+	if err != nil {
+		t.Error("Expected no error from first Read, got:", err)
+	}
+	if len(record.RawSample) != 5 {
+		t.Errorf("Expected to read 5 bytes but got %d", len(record.RawSample))
+	}
+
+	qt.Assert(t, qt.Equals(rd.AvailableBytes(), 2*16))
+
+	record, err = rd.Read()
+
+	if err != nil {
+		t.Error("Expected no error from second Read, got:", err)
+	}
+	if len(record.RawSample) != 7 {
+		t.Errorf("Expected to read 7 bytes but got %d", len(record.RawSample))
+	}
+
+	qt.Assert(t, qt.Equals(rd.AvailableBytes(), 0))
+
+	_, err = rd.Read()
+	if !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Errorf("Expected os.ErrDeadlineExceeded from third Read but got %v", err)
+	}
+}
+
+func TestReaderFlushPendingEvents(t *testing.T) {
+	testutils.SkipOnOldKernel(t, "5.8", "BPF ring buffer")
+
+	prog, events := mustOutputSamplesProg(t,
+		sampleMessage{size: 5, flags: sys.BPF_RB_NO_WAKEUP}, // Read after Flush
+		sampleMessage{size: 6, flags: sys.BPF_RB_NO_WAKEUP}, // Discard
+		sampleMessage{size: 7, flags: sys.BPF_RB_NO_WAKEUP}) // Read won't block
 
 	rd, err := NewReader(events)
 	if err != nil {
@@ -277,23 +355,39 @@ func TestReaderNoWakeup(t *testing.T) {
 		t.Fatal("Expected 0 as return value, got", errno)
 	}
 
-	rd.SetDeadline(time.Now())
+	wait := make(chan *Record)
+	go func() {
+		wait <- nil
+		record, err := rd.Read()
+		qt.Assert(t, qt.IsNil(err))
+		wait <- &record
+	}()
+
+	<-wait
+	time.Sleep(10 * time.Millisecond)
+	err = rd.Flush()
+	qt.Assert(t, qt.IsNil(err))
+
+	waitRec := <-wait
+	if waitRec == nil {
+		t.Error("Expected to read record but got nil")
+	}
+	if waitRec != nil && len(waitRec.RawSample) != 5 {
+		t.Errorf("Expected to read 5 bytes but got %d", len(waitRec.RawSample))
+	}
+
 	record, err := rd.Read()
-
-	if err != nil {
-		t.Error("Expected no error from first Read, got:", err)
-	}
-	if len(record.RawSample) != 5 {
-		t.Errorf("Expected to read 5 bytes bot got %d", len(record.RawSample))
-	}
-
-	record, err = rd.Read()
 
 	if err != nil {
 		t.Error("Expected no error from second Read, got:", err)
 	}
 	if len(record.RawSample) != 7 {
-		t.Errorf("Expected to read 7 bytes bot got %d", len(record.RawSample))
+		t.Errorf("Expected to read 7 bytes but got %d", len(record.RawSample))
+	}
+
+	_, err = rd.Read()
+	if !errors.Is(err, ErrFlushed) {
+		t.Errorf("Expected ErrFlushed from third Read but got %v", err)
 	}
 }
 

@@ -63,7 +63,7 @@ func AttachNetfilter(opts NetfilterOptions) (Link, error) {
 	return &netfilterLink{RawLink{fd, ""}}, nil
 }
 
-func (*netfilterLink) Update(new *gbpf.Program) error {
+func (*netfilterLink) Update(_ *gbpf.Program) error {
 	return fmt.Errorf("netfilter update: %w", ErrNotSupported)
 }
 

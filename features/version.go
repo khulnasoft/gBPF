@@ -1,6 +1,6 @@
 package features
 
-import "github.com/khulnasoft/gbpf/internal"
+import "github.com/khulnasoft/gbpf/internal/linux"
 
 // LinuxVersionCode returns the version of the currently running kernel
 // as defined in the LINUX_VERSION_CODE compile-time macro. It is represented
@@ -10,7 +10,7 @@ import "github.com/khulnasoft/gbpf/internal"
 // kernel features, always prefer feature probes in this package. Some
 // distributions backport or disable gBPF features.
 func LinuxVersionCode() (uint32, error) {
-	v, err := internal.KernelVersion()
+	v, err := linux.KernelVersion()
 	if err != nil {
 		return 0, err
 	}

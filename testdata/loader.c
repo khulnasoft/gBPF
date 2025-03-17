@@ -58,9 +58,15 @@ struct {
 		});
 } btf_outer_map_anon __section(".maps");
 
+struct perf_event {
+	uint64_t foo;
+	uint64_t bar;
+};
+
 struct {
 	__uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
 	__uint(max_entries, 4096);
+	__type(value, struct perf_event);
 } perf_event_array __section(".maps");
 
 struct bpf_map_def array_of_hash_map __section("maps") = {
@@ -95,18 +101,22 @@ int __attribute__((noinline)) global_fn(uint32_t arg) {
 	return static_fn(arg) + global_fn2(arg) + global_fn3(arg);
 }
 
-static volatile unsigned int key1 = 0; // .bss
-static volatile unsigned int key2 = 1; // .data
-volatile const unsigned int key3  = 2; // .rodata
-static volatile const uint32_t arg; // .rodata, populated by loader
+volatile unsigned int key1       = 0; // .bss
+volatile unsigned int key2       = 1; // .data
+volatile const unsigned int key3 = 2; // .rodata
+
+// .rodata, populated by loader
+volatile const uint32_t arg;
 // custom .rodata section, populated by loader
-static volatile const uint32_t arg2 __section(".rodata.test");
+volatile const uint32_t arg2 __section(".rodata.test");
+// custom .data section
+volatile uint32_t arg3 __section(".data.test");
 
 __section("xdp") int xdp_prog() {
-	map_lookup_elem(&hash_map, (void *)&key1);
-	map_lookup_elem(&hash_map2, (void *)&key2);
-	map_lookup_elem(&hash_map2, (void *)&key3);
-	return static_fn(arg) + global_fn(arg) + arg2;
+	bpf_map_lookup_elem(&hash_map, (void *)&key1);
+	bpf_map_lookup_elem(&hash_map2, (void *)&key2);
+	bpf_map_lookup_elem(&hash_map2, (void *)&key3);
+	return static_fn(arg) + global_fn(arg) + arg2 + arg3;
 }
 
 // This function has no relocations, and is thus parsed differently.

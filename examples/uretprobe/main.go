@@ -2,7 +2,7 @@
 // The program will be attached to the 'readline' symbol in the binary '/bin/bash' and print out
 // the line which 'readline' functions returns to the caller.
 
-//go:build amd64
+//go:build amd64 && linux
 
 package main
 
@@ -15,13 +15,14 @@ import (
 	"os/signal"
 	"syscall"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/khulnasoft/gbpf/link"
 	"github.com/khulnasoft/gbpf/perf"
 	"github.com/khulnasoft/gbpf/rlimit"
-	"golang.org/x/sys/unix"
 )
 
-//go:generate go run github.com/khulnasoft/gbpf/cmd/bpf2go -target amd64 -type event bpf uretprobe.c -- -I../headers
+//go:generate go run github.com/khulnasoft/gbpf/cmd/bpf2go -tags linux -target amd64 -type event bpf uretprobe.c -- -I../headers
 
 const (
 	// The path to the ELF binary containing the function to trace.

@@ -1,3 +1,5 @@
+//go:build linux
+
 // This program demonstrates attaching an gBPF program to a network interface
 // with XDP (eXpress Data Path). The program parses the IPv4 source address
 // from packets and writes the packet count by IP to an LRU hash map.
@@ -21,7 +23,7 @@ import (
 	"github.com/khulnasoft/gbpf/link"
 )
 
-//go:generate go run github.com/khulnasoft/gbpf/cmd/bpf2go bpf xdp.c -- -I../headers
+//go:generate go run github.com/khulnasoft/gbpf/cmd/bpf2go -tags linux bpf xdp.c -- -I../headers
 
 func main() {
 	if len(os.Args) < 2 {

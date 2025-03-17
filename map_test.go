@@ -1,23 +1,27 @@
 package gbpf
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"sort"
 	"testing"
 	"unsafe"
 
+	"github.com/go-quicktest/qt"
+
 	"github.com/khulnasoft/gbpf/asm"
 	"github.com/khulnasoft/gbpf/btf"
 	"github.com/khulnasoft/gbpf/internal"
+	"github.com/khulnasoft/gbpf/internal/platform"
 	"github.com/khulnasoft/gbpf/internal/sys"
 	"github.com/khulnasoft/gbpf/internal/testutils"
 	"github.com/khulnasoft/gbpf/internal/unix"
-
-	"github.com/go-quicktest/qt"
 )
 
 var (
@@ -31,23 +35,8 @@ var (
 	}
 )
 
-// newHash returns a new Map of type Hash. Cleanup is handled automatically.
-func newHash(t *testing.T) *Map {
-	hash, err := NewMap(&MapSpec{
-		Type:       Hash,
-		KeySize:    5,
-		ValueSize:  4,
-		MaxEntries: 10,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { hash.Close() })
-	return hash
-}
-
 func TestMap(t *testing.T) {
-	m := createArray(t)
+	m := createMap(t, Array, 2)
 
 	t.Log(m)
 
@@ -92,27 +81,31 @@ func TestMap(t *testing.T) {
 	}
 }
 
-func TestMapBatch(t *testing.T) {
-	if err := haveBatchAPI(); err != nil {
-		t.Skipf("batch api not available: %v", err)
+func TestMapSpecCopy(t *testing.T) {
+	a := &MapSpec{
+		"foo",
+		Hash,
+		4,
+		4,
+		1,
+		1,
+		PinByName,
+		1,
+		[]MapKV{{1, 2}}, // Can't copy Contents, use value types
+		nil,             // InnerMap
+		bytes.NewReader(nil),
+		&btf.Int{},
+		&btf.Int{},
 	}
+	a.InnerMap = a
 
+	qt.Check(t, qt.IsNil((*MapSpec)(nil).Copy()))
+	qt.Assert(t, testutils.IsDeepCopy(a.Copy(), a))
+}
+
+func TestMapBatch(t *testing.T) {
 	contents := []uint32{
 		42, 4242, 23, 2323,
-	}
-
-	mustNewMap := func(t *testing.T, mapType MapType, max uint32) *Map {
-		m, err := NewMap(&MapSpec{
-			Type:       mapType,
-			KeySize:    4,
-			ValueSize:  4,
-			MaxEntries: max,
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { m.Close() })
-		return m
 	}
 
 	keysAndValuesForMap := func(m *Map, contents []uint32) (keys, values []uint32, stride int) {
@@ -140,9 +133,10 @@ func TestMapBatch(t *testing.T) {
 				testutils.SkipOnOldKernel(t, "5.13", "batched ops support for percpu array")
 			}
 
-			m := mustNewMap(t, typ, uint32(len(contents)))
+			m := createMap(t, typ, uint32(len(contents)))
 			keys, values, _ := keysAndValuesForMap(m, contents)
 			count, err := m.BatchUpdate(keys, values, nil)
+			testutils.SkipIfNotSupported(t, err)
 			qt.Assert(t, qt.IsNil(err))
 			qt.Assert(t, qt.Equals(count, len(contents)))
 
@@ -164,9 +158,10 @@ func TestMapBatch(t *testing.T) {
 
 	for _, typ := range []MapType{Hash, PerCPUHash} {
 		t.Run(typ.String(), func(t *testing.T) {
-			m := mustNewMap(t, typ, uint32(len(contents)))
+			m := createMap(t, typ, uint32(len(contents)))
 			keys, values, stride := keysAndValuesForMap(m, contents)
 			count, err := m.BatchUpdate(keys, values, nil)
+			testutils.SkipIfNotSupported(t, err)
 			qt.Assert(t, qt.IsNil(err))
 			qt.Assert(t, qt.Equals(count, len(contents)))
 
@@ -206,29 +201,13 @@ func TestMapBatch(t *testing.T) {
 }
 
 func TestMapBatchCursorReuse(t *testing.T) {
-	spec := &MapSpec{
-		Type:       Array,
-		KeySize:    4,
-		ValueSize:  4,
-		MaxEntries: 4,
-	}
-
-	arr1, err := NewMap(spec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer arr1.Close()
-
-	arr2, err := NewMap(spec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer arr2.Close()
+	arr1 := createMap(t, Array, 4)
+	arr2 := createMap(t, Array, 4)
 
 	tmp := make([]uint32, 2)
 
 	var cursor MapBatchCursor
-	_, err = arr1.BatchLookup(&cursor, tmp, tmp, nil)
+	_, err := arr1.BatchLookup(&cursor, tmp, tmp, nil)
 	testutils.SkipIfNotSupported(t, err)
 	qt.Assert(t, qt.IsNil(err))
 
@@ -237,7 +216,7 @@ func TestMapBatchCursorReuse(t *testing.T) {
 }
 
 func TestMapLookupKeyTooSmall(t *testing.T) {
-	m := createArray(t)
+	m := createMap(t, Array, 2)
 	defer m.Close()
 
 	var small uint16
@@ -245,20 +224,25 @@ func TestMapLookupKeyTooSmall(t *testing.T) {
 	qt.Assert(t, qt.IsNotNil(m.Lookup(uint32(0), &small)))
 }
 
+func TestMapLookupKeyNotFoundAllocations(t *testing.T) {
+	m := createMap(t, Array, 2)
+	defer m.Close()
+	var key, out uint32 = 3, 0
+	var err error
+
+	allocs := testing.AllocsPerRun(5, func() {
+		err = m.Lookup(&key, &out)
+	})
+	qt.Assert(t, qt.ErrorIs(err, ErrKeyNotExist))
+	qt.Assert(t, qt.Equals(allocs, float64(0)))
+}
+
 func TestBatchAPIMapDelete(t *testing.T) {
 	if err := haveBatchAPI(); err != nil {
 		t.Skipf("batch api not available: %v", err)
 	}
-	m, err := NewMap(&MapSpec{
-		Type:       Hash,
-		KeySize:    4,
-		ValueSize:  4,
-		MaxEntries: 10,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer m.Close()
+
+	m := createMap(t, Hash, 10)
 
 	var (
 		keys   = []uint32{0, 1}
@@ -295,7 +279,7 @@ func TestBatchAPIMapDelete(t *testing.T) {
 }
 
 func TestMapClose(t *testing.T) {
-	m := createArray(t)
+	m := createMap(t, Array, 2)
 
 	if err := m.Close(); err != nil {
 		t.Fatal("Can't close map:", err)
@@ -312,17 +296,11 @@ func TestMapClose(t *testing.T) {
 
 func TestBatchMapWithLock(t *testing.T) {
 	testutils.SkipOnOldKernel(t, "5.13", "MAP BATCH BPF_F_LOCK")
-	file := testutils.NativeFile(t, "testdata/map_spin_lock-%s.elf")
-	spec, err := LoadCollectionSpec(file)
-	if err != nil {
-		t.Fatal("Can't parse ELF:", err)
-	}
 
-	coll, err := NewCollection(spec)
-	if err != nil {
-		t.Fatal("Can't parse ELF:", err)
-	}
-	defer coll.Close()
+	spec, err := LoadCollectionSpec(testutils.NativeFile(t, "testdata/map_spin_lock-%s.elf"))
+	qt.Assert(t, qt.IsNil(err))
+
+	coll := mustNewCollection(t, spec, nil)
 
 	type spinLockValue struct {
 		Cnt     uint32
@@ -337,6 +315,7 @@ func TestBatchMapWithLock(t *testing.T) {
 	keys := []uint32{0, 1}
 	values := []spinLockValue{{Cnt: 42}, {Cnt: 4242}}
 	count, err := m.BatchUpdate(keys, values, &BatchOptions{ElemFlags: uint64(UpdateLock)})
+	testutils.SkipIfNotSupportedOnOS(t, err)
 	if err != nil {
 		t.Fatalf("BatchUpdate: %v", err)
 	}
@@ -369,17 +348,11 @@ func TestBatchMapWithLock(t *testing.T) {
 
 func TestMapWithLock(t *testing.T) {
 	testutils.SkipOnOldKernel(t, "5.13", "MAP BPF_F_LOCK")
-	file := testutils.NativeFile(t, "testdata/map_spin_lock-%s.elf")
-	spec, err := LoadCollectionSpec(file)
-	if err != nil {
-		t.Fatal("Can't parse ELF:", err)
-	}
 
-	coll, err := NewCollection(spec)
-	if err != nil {
-		t.Fatal("Can't parse ELF:", err)
-	}
-	defer coll.Close()
+	spec, err := LoadCollectionSpec(testutils.NativeFile(t, "testdata/map_spin_lock-%s.elf"))
+	qt.Assert(t, qt.IsNil(err))
+
+	coll := mustNewCollection(t, spec, nil)
 
 	type spinLockValue struct {
 		Cnt     uint32
@@ -394,6 +367,9 @@ func TestMapWithLock(t *testing.T) {
 	key := uint32(1)
 	value := spinLockValue{Cnt: 5}
 	err = m.Update(key, value, UpdateLock)
+	if platform.IsWindows && errors.Is(err, unix.EINVAL) {
+		t.Skip("Windows doesn't support UpdateLock")
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,7 +414,7 @@ func TestMapCloneNil(t *testing.T) {
 }
 
 func TestMapPin(t *testing.T) {
-	m := createArray(t)
+	m := createMap(t, Array, 2)
 
 	if err := m.Put(uint32(0), uint32(42)); err != nil {
 		t.Fatal("Can't put:", err)
@@ -474,29 +450,9 @@ func TestMapPin(t *testing.T) {
 }
 
 func TestNestedMapPin(t *testing.T) {
-	m, err := NewMap(&MapSpec{
-		Type:       ArrayOfMaps,
-		KeySize:    4,
-		ValueSize:  4,
-		MaxEntries: 2,
-		InnerMap: &MapSpec{
-			Type:       Array,
-			KeySize:    4,
-			ValueSize:  4,
-			MaxEntries: 1,
-		},
-	})
-	testutils.SkipIfNotSupported(t, err)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer m.Close()
+	m := createMapInMap(t, ArrayOfMaps, Array)
 
-	tmp, err := os.MkdirTemp("/sys/fs/bpf", "gbpf-test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmp)
+	tmp := testutils.TempBPFFS(t)
 
 	path := filepath.Join(tmp, "nested")
 	if err := m.Pin(path); err != nil {
@@ -504,7 +460,7 @@ func TestNestedMapPin(t *testing.T) {
 	}
 	m.Close()
 
-	m, err = LoadPinnedMap(path, nil)
+	m, err := LoadPinnedMap(path, nil)
 	testutils.SkipIfNotSupported(t, err)
 	if err != nil {
 		t.Fatal(err)
@@ -513,7 +469,7 @@ func TestNestedMapPin(t *testing.T) {
 }
 
 func TestNestedMapPinNested(t *testing.T) {
-	if _, err := NewMap(&MapSpec{
+	if _, err := newMap(t, &MapSpec{
 		Type:       ArrayOfMaps,
 		KeySize:    4,
 		ValueSize:  4,
@@ -526,7 +482,7 @@ func TestNestedMapPinNested(t *testing.T) {
 			MaxEntries: 1,
 			Pinning:    PinByName,
 		},
-	}); err == nil {
+	}, nil); err == nil {
 		t.Error("Inner maps should not be pinnable")
 	}
 }
@@ -538,16 +494,12 @@ func TestMapPinMultiple(t *testing.T) {
 
 	spec := spec1.Copy()
 
-	m1, err := NewMapWithOptions(spec, MapOptions{PinPath: tmp})
-	if err != nil {
-		t.Fatal("Can't create map:", err)
-	}
-	defer m1.Close()
+	m1 := mustNewMap(t, spec, &MapOptions{PinPath: tmp})
 	pinned := m1.IsPinned()
 	qt.Assert(t, qt.IsTrue(pinned))
 
 	newPath := filepath.Join(tmp, "bar")
-	err = m1.Pin(newPath)
+	err := m1.Pin(newPath)
 	testutils.SkipIfNotSupported(t, err)
 	qt.Assert(t, qt.IsNil(err))
 	oldPath := filepath.Join(tmp, spec.Name)
@@ -562,7 +514,7 @@ func TestMapPinMultiple(t *testing.T) {
 }
 
 func TestMapPinWithEmptyPath(t *testing.T) {
-	m := createArray(t)
+	m := createMap(t, Array, 2)
 
 	err := m.Pin("")
 
@@ -575,16 +527,9 @@ func TestMapPinFailReplace(t *testing.T) {
 	spec2 := spec1.Copy()
 	spec2.Name = spec1.Name + "bar"
 
-	m, err := NewMapWithOptions(spec, MapOptions{PinPath: tmp})
-	if err != nil {
-		t.Fatal("Failed to create map:", err)
-	}
-	defer m.Close()
-	m2, err := NewMapWithOptions(spec2, MapOptions{PinPath: tmp})
-	if err != nil {
-		t.Fatal("Failed to create map2:", err)
-	}
-	defer m2.Close()
+	m := mustNewMap(t, spec, &MapOptions{PinPath: tmp})
+	_ = mustNewMap(t, spec2, &MapOptions{PinPath: tmp})
+
 	qt.Assert(t, qt.IsTrue(m.IsPinned()))
 	newPath := filepath.Join(tmp, spec2.Name)
 
@@ -596,11 +541,7 @@ func TestMapUnpin(t *testing.T) {
 	tmp := testutils.TempBPFFS(t)
 	spec := spec1.Copy()
 
-	m, err := NewMapWithOptions(spec, MapOptions{PinPath: tmp})
-	if err != nil {
-		t.Fatal("Failed to create map:", err)
-	}
-	defer m.Close()
+	m := mustNewMap(t, spec, &MapOptions{PinPath: tmp})
 
 	pinned := m.IsPinned()
 	qt.Assert(t, qt.IsTrue(pinned))
@@ -623,9 +564,7 @@ func TestMapLoadPinned(t *testing.T) {
 
 	spec := spec1.Copy()
 
-	m1, err := NewMapWithOptions(spec, MapOptions{PinPath: tmp})
-	qt.Assert(t, qt.IsNil(err))
-	defer m1.Close()
+	m1 := mustNewMap(t, spec, &MapOptions{PinPath: tmp})
 	pinned := m1.IsPinned()
 	qt.Assert(t, qt.IsTrue(pinned))
 
@@ -657,13 +596,8 @@ func TestMapLoadReusePinned(t *testing.T) {
 				Pinning:    PinByName,
 			}
 
-			m1, err := NewMapWithOptions(spec, MapOptions{PinPath: tmp})
-			qt.Assert(t, qt.IsNil(err))
-			defer m1.Close()
-
-			m2, err := NewMapWithOptions(spec, MapOptions{PinPath: tmp})
-			qt.Assert(t, qt.IsNil(err))
-			defer m2.Close()
+			_ = mustNewMap(t, spec, &MapOptions{PinPath: tmp})
+			_ = mustNewMap(t, spec, &MapOptions{PinPath: tmp})
 		})
 	}
 }
@@ -673,9 +607,7 @@ func TestMapLoadPinnedUnpin(t *testing.T) {
 
 	spec := spec1.Copy()
 
-	m1, err := NewMapWithOptions(spec, MapOptions{PinPath: tmp})
-	qt.Assert(t, qt.IsNil(err))
-	defer m1.Close()
+	m1 := mustNewMap(t, spec, &MapOptions{PinPath: tmp})
 	pinned := m1.IsPinned()
 	qt.Assert(t, qt.IsTrue(pinned))
 
@@ -694,7 +626,7 @@ func TestMapLoadPinnedWithOptions(t *testing.T) {
 	// Introduced in commit 6e71b04a8224.
 	testutils.SkipOnOldKernel(t, "4.15", "file_flags in BPF_OBJ_GET")
 
-	array := createArray(t)
+	array := createMap(t, Array, 2)
 
 	tmp := testutils.TempBPFFS(t)
 
@@ -711,6 +643,9 @@ func TestMapLoadPinnedWithOptions(t *testing.T) {
 		array, err := LoadPinnedMap(path, &LoadPinOptions{
 			ReadOnly: true,
 		})
+		if platform.IsWindows && errors.Is(err, unix.EINVAL) {
+			t.Skip("Windows doesn't support file_flags in OBJ_GET")
+		}
 		testutils.SkipIfNotSupported(t, err)
 		if err != nil {
 			t.Fatal("Can't load map:", err)
@@ -726,6 +661,9 @@ func TestMapLoadPinnedWithOptions(t *testing.T) {
 		array, err := LoadPinnedMap(path, &LoadPinOptions{
 			WriteOnly: true,
 		})
+		if platform.IsWindows && errors.Is(err, unix.EINVAL) {
+			t.Skip("Windows doesn't support file_flags in OBJ_GET")
+		}
 		testutils.SkipIfNotSupported(t, err)
 		if err != nil {
 			t.Fatal("Can't load map:", err)
@@ -751,13 +689,9 @@ func TestMapPinFlags(t *testing.T) {
 		Pinning:    PinByName,
 	}
 
-	m, err := NewMapWithOptions(spec, MapOptions{
-		PinPath: tmp,
-	})
-	qt.Assert(t, qt.IsNil(err))
-	m.Close()
+	_ = mustNewMap(t, spec, &MapOptions{PinPath: tmp})
 
-	_, err = NewMapWithOptions(spec, MapOptions{
+	_, err := newMap(t, spec, &MapOptions{
 		PinPath: tmp,
 		LoadPinOptions: LoadPinOptions{
 			Flags: math.MaxUint32,
@@ -768,34 +702,14 @@ func TestMapPinFlags(t *testing.T) {
 	}
 }
 
-func createArray(t *testing.T) *Map {
-	t.Helper()
-
-	m, err := NewMap(&MapSpec{
-		Type:       Array,
-		KeySize:    4,
-		ValueSize:  4,
-		MaxEntries: 2,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { m.Close() })
-	return m
-}
-
 func TestMapQueue(t *testing.T) {
 	testutils.SkipOnOldKernel(t, "4.20", "map type queue")
 
-	m, err := NewMap(&MapSpec{
+	m := mustNewMap(t, &MapSpec{
 		Type:       Queue,
 		ValueSize:  4,
 		MaxEntries: 2,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer m.Close()
+	}, nil)
 
 	for _, v := range []uint32{42, 4242} {
 		if err := m.Put(nil, v); err != nil {
@@ -804,6 +718,14 @@ func TestMapQueue(t *testing.T) {
 	}
 
 	var v uint32
+	if err := m.Lookup(nil, &v); err != nil {
+		t.Fatal("Lookup (Peek) on Queue:", err)
+	}
+	if v != 42 {
+		t.Error("Want value 42, got", v)
+	}
+	v = 0
+
 	if err := m.LookupAndDelete(nil, &v); err != nil {
 		t.Fatal("Can't lookup and delete element:", err)
 	}
@@ -822,41 +744,27 @@ func TestMapQueue(t *testing.T) {
 	if err := m.LookupAndDelete(nil, &v); !errors.Is(err, ErrKeyNotExist) {
 		t.Fatal("Lookup and delete on empty Queue:", err)
 	}
+
+	if err := m.Lookup(nil, &v); !errors.Is(err, ErrKeyNotExist) {
+		t.Fatal("Lookup (Peek) on empty Queue:", err)
+	}
 }
 
 func TestMapInMap(t *testing.T) {
 	for _, typ := range []MapType{ArrayOfMaps, HashOfMaps} {
 		t.Run(typ.String(), func(t *testing.T) {
-			spec := &MapSpec{
-				Type:       typ,
-				KeySize:    4,
-				MaxEntries: 2,
-				InnerMap: &MapSpec{
-					Type:       Array,
-					KeySize:    4,
-					ValueSize:  4,
-					MaxEntries: 2,
-				},
-			}
-
-			inner, err := NewMap(spec.InnerMap)
-			if err != nil {
-				t.Fatal(err)
-			}
+			inner := createMap(t, Array, 2)
 			if err := inner.Put(uint32(1), uint32(4242)); err != nil {
 				t.Fatal(err)
 			}
-			defer inner.Close()
 
-			outer, err := NewMap(spec)
-			testutils.SkipIfNotSupported(t, err)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer outer.Close()
-
+			outer := createMapInMap(t, typ, Array)
 			if err := outer.Put(uint32(0), inner); err != nil {
 				t.Fatal("Can't put inner map:", err)
+			}
+
+			if err := outer.Put(uint32(0), (*Map)(nil)); err == nil {
+				t.Fatal("Put accepted a nil Map")
 			}
 
 			var inner2 *Map
@@ -889,28 +797,12 @@ func TestMapInMap(t *testing.T) {
 }
 
 func TestNewMapInMapFromFD(t *testing.T) {
-	nested, err := NewMap(&MapSpec{
-		Type:       ArrayOfMaps,
-		KeySize:    4,
-		MaxEntries: 2,
-		InnerMap: &MapSpec{
-			Type:       Array,
-			KeySize:    4,
-			ValueSize:  4,
-			MaxEntries: 2,
-		},
-	})
-	testutils.SkipIfNotSupported(t, err)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer nested.Close()
+	nested := createMapInMap(t, ArrayOfMaps, Array)
 
 	// Do not copy this, use Clone instead.
-	another, err := NewMapFromFD(dupFD(t, nested.FD()))
-	if err != nil {
-		t.Fatal("Can't create a new nested map from an FD")
-	}
+	another, err := NewMapFromFD(testutils.DupFD(t, nested.FD()))
+	testutils.SkipIfNotSupportedOnOS(t, err)
+	qt.Assert(t, qt.IsNil(err))
 	another.Close()
 }
 
@@ -922,36 +814,15 @@ func TestPerfEventArray(t *testing.T) {
 	}
 
 	for _, spec := range specs {
-		m, err := NewMap(spec)
-		if err != nil {
-			t.Errorf("Can't create perf event array from %v: %s", spec, err)
-		} else {
-			m.Close()
-		}
+		_ = mustNewMap(t, spec, nil)
 	}
 }
 
-func createMapInMap(t *testing.T, typ MapType) *Map {
-	t.Helper()
+func TestCPUMap(t *testing.T) {
+	testutils.SkipOnOldKernel(t, "4.15", "cpu map")
 
-	spec := &MapSpec{
-		Type:       typ,
-		KeySize:    4,
-		MaxEntries: 2,
-		InnerMap: &MapSpec{
-			Type:       Array,
-			KeySize:    4,
-			ValueSize:  4,
-			MaxEntries: 2,
-		},
-	}
-
-	m, err := NewMap(spec)
-	testutils.SkipIfNotSupported(t, err)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return m
+	m := mustNewMap(t, &MapSpec{Type: CPUMap, KeySize: 4, ValueSize: 4}, nil)
+	qt.Assert(t, qt.Equals(m.MaxEntries(), uint32(MustPossibleCPU())))
 }
 
 func TestMapInMapValueSize(t *testing.T) {
@@ -968,41 +839,28 @@ func TestMapInMapValueSize(t *testing.T) {
 		},
 	}
 
-	m, err := NewMap(spec)
-	testutils.SkipIfNotSupported(t, err)
-	if err != nil {
-		t.Fatal(err)
-	}
-	m.Close()
+	_ = mustNewMap(t, spec, nil)
 
 	spec.ValueSize = 4
-	m, err = NewMap(spec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	m.Close()
+	_ = mustNewMap(t, spec, nil)
 
 	spec.ValueSize = 1
-	if _, err := NewMap(spec); err == nil {
-		t.Fatal("Expected an error")
-	}
+	_, err := newMap(t, spec, nil)
+	qt.Assert(t, qt.IsNotNil(err))
 }
 
 func TestIterateEmptyMap(t *testing.T) {
 	makeMap := func(t *testing.T, mapType MapType) *Map {
-		m, err := NewMap(&MapSpec{
+		m, err := newMap(t, &MapSpec{
 			Type:       mapType,
 			KeySize:    4,
 			ValueSize:  8,
 			MaxEntries: 2,
-		})
+		}, nil)
 		if errors.Is(err, unix.EINVAL) {
 			t.Skip(mapType, "is not supported")
 		}
-		if err != nil {
-			t.Fatal("Can't create map:", err)
-		}
-		t.Cleanup(func() { m.Close() })
+		qt.Assert(t, qt.IsNil(err))
 		return m
 	}
 
@@ -1016,7 +874,7 @@ func TestIterateEmptyMap(t *testing.T) {
 
 			var key string
 			var value uint64
-			if entries.Next(&key, &value) != false {
+			if entries.Next(&key, &value) {
 				t.Error("Empty hash should not be iterable")
 			}
 			if err := entries.Err(); err != nil {
@@ -1045,23 +903,14 @@ func TestIterateEmptyMap(t *testing.T) {
 }
 
 func TestMapIterate(t *testing.T) {
-	hash, err := NewMap(&MapSpec{
-		Type:       Hash,
-		KeySize:    5,
-		ValueSize:  4,
-		MaxEntries: 2,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer hash.Close()
+	hash := createMap(t, Hash, 2)
 
-	if err := hash.Put("hello", uint32(21)); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := hash.Put("world", uint32(42)); err != nil {
-		t.Fatal(err)
+	data := []string{"test", "more"}
+	slices.Sort(data)
+	for i, k := range data {
+		if err := hash.Put(k, uint32(i)); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	var key string
@@ -1072,43 +921,42 @@ func TestMapIterate(t *testing.T) {
 	for entries.Next(&key, &value) {
 		keys = append(keys, key)
 	}
-
-	if err := entries.Err(); err != nil {
-		t.Fatal(err)
-	}
+	qt.Assert(t, qt.IsNil(entries.Err()))
 
 	sort.Strings(keys)
+	qt.Assert(t, qt.DeepEquals(keys, data))
+}
 
-	if n := len(keys); n != 2 {
-		t.Fatal("Expected to get 2 keys, have", n)
-	}
-	if keys[0] != "hello" {
-		t.Error("Expected index 0 to be hello, got", keys[0])
-	}
-	if keys[1] != "world" {
-		t.Error("Expected index 1 to be hello, got", keys[1])
-	}
+func TestIterateWrongMap(t *testing.T) {
+	testutils.SkipOnOldKernel(t, "4.20", "map type queue")
+
+	m := mustNewMap(t, &MapSpec{
+		Type:       Queue,
+		ValueSize:  4,
+		MaxEntries: 2,
+		Contents: []MapKV{
+			{nil, uint32(0)},
+			{nil, uint32(1)},
+		},
+	}, nil)
+
+	var value uint32
+	entries := m.Iterate()
+
+	qt.Assert(t, qt.IsFalse(entries.Next(nil, &value)))
+	qt.Assert(t, qt.IsNotNil(entries.Err()))
 }
 
 func TestMapIteratorAllocations(t *testing.T) {
-	arr, err := NewMap(&MapSpec{
-		Type:       Array,
-		KeySize:    4,
-		ValueSize:  4,
-		MaxEntries: 10,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer arr.Close()
+	arr := createMap(t, Array, 10)
 
 	var k, v uint32
 	iter := arr.Iterate()
 
 	// AllocsPerRun warms up the function for us.
-	allocs := testing.AllocsPerRun(1, func() {
+	allocs := testing.AllocsPerRun(int(arr.MaxEntries()-1), func() {
 		if !iter.Next(&k, &v) {
-			t.Fatal("Next failed")
+			t.Fatal("Next failed while iterating: %w", iter.Err())
 		}
 	})
 
@@ -1118,16 +966,7 @@ func TestMapIteratorAllocations(t *testing.T) {
 func TestMapBatchLookupAllocations(t *testing.T) {
 	testutils.SkipIfNotSupported(t, haveBatchAPI())
 
-	arr, err := NewMap(&MapSpec{
-		Type:       Array,
-		KeySize:    4,
-		ValueSize:  4,
-		MaxEntries: 10,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer arr.Close()
+	arr := createMap(t, Array, 10)
 
 	var cursor MapBatchCursor
 	tmp := make([]uint32, 2)
@@ -1145,16 +984,12 @@ func TestMapBatchLookupAllocations(t *testing.T) {
 }
 
 func TestMapIterateHashKeyOneByteFull(t *testing.T) {
-	hash, err := NewMap(&MapSpec{
+	hash := mustNewMap(t, &MapSpec{
 		Type:       Hash,
 		KeySize:    1,
 		ValueSize:  1,
 		MaxEntries: 256,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer hash.Close()
+	}, nil)
 
 	for i := 0; i < int(hash.MaxEntries()); i++ {
 		if err := hash.Put(uint8(i), uint8(i)); err != nil {
@@ -1183,6 +1018,10 @@ func TestMapIterateHashKeyOneByteFull(t *testing.T) {
 }
 
 func TestMapGuessNonExistentKey(t *testing.T) {
+	if !platform.IsLinux {
+		t.Skip("No need to test linux quirk on", runtime.GOOS)
+	}
+
 	tests := []struct {
 		name    string
 		mapType MapType
@@ -1221,16 +1060,12 @@ func TestMapGuessNonExistentKey(t *testing.T) {
 				maxEntries = 1
 			}
 
-			m, err := NewMap(&MapSpec{
+			m := mustNewMap(t, &MapSpec{
 				Type:       tt.mapType,
 				KeySize:    4,
 				ValueSize:  4,
 				MaxEntries: maxEntries,
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer m.Close()
+			}, nil)
 
 			for _, key := range tt.keys {
 				if err := m.Put(key, key); err != nil {
@@ -1257,16 +1092,12 @@ func TestMapGuessNonExistentKey(t *testing.T) {
 	t.Run("Hash: full", func(t *testing.T) {
 		const n = math.MaxUint8 + 1
 
-		hash, err := NewMap(&MapSpec{
+		hash := mustNewMap(t, &MapSpec{
 			Type:       Hash,
 			KeySize:    1,
 			ValueSize:  1,
 			MaxEntries: n,
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer hash.Close()
+		}, nil)
 
 		for i := 0; i < n; i++ {
 			if err := hash.Put(uint8(i), uint8(i)); err != nil {
@@ -1274,7 +1105,7 @@ func TestMapGuessNonExistentKey(t *testing.T) {
 			}
 		}
 
-		_, err = hash.guessNonExistentKey()
+		_, err := hash.guessNonExistentKey()
 		if err == nil {
 			t.Fatal("guessNonExistentKey doesn't return error on full hash table")
 		}
@@ -1282,15 +1113,15 @@ func TestMapGuessNonExistentKey(t *testing.T) {
 }
 
 func TestNotExist(t *testing.T) {
-	hash := newHash(t)
+	hash := createMap(t, Hash, 10)
 
 	var tmp uint32
-	err := hash.Lookup("hello", &tmp)
+	err := hash.Lookup("test", &tmp)
 	if !errors.Is(err, ErrKeyNotExist) {
 		t.Error("Lookup doesn't return ErrKeyNotExist")
 	}
 
-	buf, err := hash.LookupBytes("hello")
+	buf, err := hash.LookupBytes("test")
 	if err != nil {
 		t.Error("Looking up non-existent key return an error:", err)
 	}
@@ -1298,11 +1129,11 @@ func TestNotExist(t *testing.T) {
 		t.Error("LookupBytes returns non-nil buffer for non-existent key")
 	}
 
-	if err := hash.Delete("hello"); !errors.Is(err, ErrKeyNotExist) {
+	if err := hash.Delete("test"); !errors.Is(err, ErrKeyNotExist) {
 		t.Error("Deleting unknown key doesn't return ErrKeyNotExist", err)
 	}
 
-	var k = []byte{1, 2, 3, 4, 5}
+	var k = []byte{1, 2, 3, 4}
 	if err := hash.NextKey(&k, &tmp); !errors.Is(err, ErrKeyNotExist) {
 		t.Error("Looking up next key in empty map doesn't return a non-existing error", err)
 	}
@@ -1313,13 +1144,13 @@ func TestNotExist(t *testing.T) {
 }
 
 func TestExist(t *testing.T) {
-	hash := newHash(t)
+	hash := createMap(t, Hash, 10)
 
-	if err := hash.Put("hello", uint32(21)); err != nil {
+	if err := hash.Put("test", uint32(21)); err != nil {
 		t.Errorf("Failed to put key/value pair into hash: %v", err)
 	}
 
-	if err := hash.Update("hello", uint32(42), UpdateNoExist); !errors.Is(err, ErrKeyExist) {
+	if err := hash.Update("test", uint32(42), UpdateNoExist); !errors.Is(err, ErrKeyExist) {
 		t.Error("Updating existing key doesn't return ErrKeyExist")
 	}
 }
@@ -1327,10 +1158,10 @@ func TestExist(t *testing.T) {
 func TestIterateMapInMap(t *testing.T) {
 	const idx = uint32(1)
 
-	parent := createMapInMap(t, ArrayOfMaps)
+	parent := createMapInMap(t, ArrayOfMaps, Array)
 	defer parent.Close()
 
-	a := createArray(t)
+	a := createMap(t, Array, 2)
 
 	if err := parent.Put(idx, a); err != nil {
 		t.Fatal(err)
@@ -1370,20 +1201,11 @@ func TestPerCPUMarshaling(t *testing.T) {
 				testutils.SkipOnOldKernel(t, "4.10", "LRU per-CPU hash")
 			}
 
-			arr, err := NewMap(&MapSpec{
-				Type:       typ,
-				KeySize:    4,
-				ValueSize:  5,
-				MaxEntries: 1,
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer arr.Close()
+			arr := createMap(t, typ, 1)
 
 			values := []*customEncoding{
-				{"hello"},
-				{"world"},
+				{"test"},
+				{"more"},
 			}
 			if err := arr.Put(uint32(0), values); err != nil {
 				t.Fatal(err)
@@ -1405,7 +1227,7 @@ func TestPerCPUMarshaling(t *testing.T) {
 				t.Fatal("Can't retrieve key 0:", err)
 			}
 
-			for i, want := range []string{"HELLO", "WORLD"} {
+			for i, want := range []string{"TEST", "MORE"} {
 				if retrieved[i] == nil {
 					t.Error("First item is nil")
 				} else if have := retrieved[i].data; have != want {
@@ -1430,21 +1252,13 @@ func TestCgroupPerCPUStorageMarshaling(t *testing.T) {
 	}
 	testutils.SkipOnOldKernel(t, "5.9", "per-CPU CGoup storage with write from user space support")
 
-	cgroup := testutils.CreateCgroup(t)
-
-	arr, err := NewMap(&MapSpec{
+	arr := mustNewMap(t, &MapSpec{
 		Type:      PerCPUCGroupStorage,
 		KeySize:   uint32(unsafe.Sizeof(bpfCgroupStorageKey{})),
 		ValueSize: uint32(unsafe.Sizeof(uint64(0))),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		arr.Close()
-	})
+	}, nil)
 
-	prog, err := NewProgram(&ProgramSpec{
+	prog := mustNewProgram(t, &ProgramSpec{
 		Type:       CGroupSKB,
 		AttachType: AttachCGroupInetEgress,
 		License:    "MIT",
@@ -1455,20 +1269,18 @@ func TestCgroupPerCPUStorageMarshaling(t *testing.T) {
 			asm.Mov.Imm(asm.R0, 0),
 			asm.Return(),
 		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer prog.Close()
+	}, nil)
+
+	cgroup := testutils.CreateCgroup(t)
 
 	progAttachAttrs := sys.ProgAttachAttr{
 		TargetFdOrIfindex: uint32(cgroup.Fd()),
 		AttachBpfFd:       uint32(prog.FD()),
 		AttachType:        uint32(AttachCGroupInetEgress),
 		AttachFlags:       0,
-		ReplaceBpfFd:      0,
+		ReplacgBpfFd:      0,
 	}
-	err = sys.ProgAttach(&progAttachAttrs)
+	err := sys.ProgAttach(&progAttachAttrs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1508,16 +1320,7 @@ func TestCgroupPerCPUStorageMarshaling(t *testing.T) {
 }
 
 func TestMapMarshalUnsafe(t *testing.T) {
-	m, err := NewMap(&MapSpec{
-		Type:       Hash,
-		KeySize:    4,
-		ValueSize:  4,
-		MaxEntries: 1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer m.Close()
+	m := createMap(t, Hash, 1)
 
 	key := uint32(1)
 	value := uint32(42)
@@ -1563,17 +1366,7 @@ func TestMapName(t *testing.T) {
 		t.Skip(err)
 	}
 
-	m, err := NewMap(&MapSpec{
-		Name:       "test",
-		Type:       Array,
-		KeySize:    4,
-		ValueSize:  4,
-		MaxEntries: 1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer m.Close()
+	m := createMap(t, Array, 1)
 
 	var info sys.MapInfo
 	if err := sys.ObjInfo(m.fd, &info); err != nil {
@@ -1586,7 +1379,7 @@ func TestMapName(t *testing.T) {
 }
 
 func TestMapFromFD(t *testing.T) {
-	m := createArray(t)
+	m := createMap(t, Array, 2)
 
 	if err := m.Put(uint32(0), uint32(123)); err != nil {
 		t.Fatal(err)
@@ -1594,7 +1387,7 @@ func TestMapFromFD(t *testing.T) {
 
 	// If you're thinking about copying this, don't. Use
 	// Clone() instead.
-	m2, err := NewMapFromFD(dupFD(t, m.FD()))
+	m2, err := NewMapFromFD(testutils.DupFD(t, m.FD()))
 	testutils.SkipIfNotSupported(t, err)
 	if err != nil {
 		t.Fatal(err)
@@ -1623,11 +1416,7 @@ func TestMapContents(t *testing.T) {
 		},
 	}
 
-	m, err := NewMap(spec)
-	if err != nil {
-		t.Fatal("Can't create map:", err)
-	}
-	defer m.Close()
+	m := mustNewMap(t, spec, nil)
 
 	var value uint32
 	if err := m.Lookup(uint32(0), &value); err != nil {
@@ -1647,13 +1436,13 @@ func TestMapContents(t *testing.T) {
 		{uint32(14), uint32(0)},
 	}
 
-	if _, err = NewMap(spec); err == nil {
-		t.Error("Invalid contents should be rejected")
-	}
+	// Invalid contents should be rejected
+	_, err := newMap(t, spec, nil)
+	qt.Assert(t, qt.IsNotNil(err))
 }
 
 func TestMapFreeze(t *testing.T) {
-	arr := createArray(t)
+	arr := createMap(t, Array, 2)
 
 	err := arr.Freeze()
 	testutils.SkipIfNotSupported(t, err)
@@ -1673,7 +1462,7 @@ func TestMapGetNextID(t *testing.T) {
 	var err error
 
 	// Ensure there is at least one map on the system.
-	_ = newHash(t)
+	_ = createMap(t, Hash, 10)
 
 	if next, err = MapGetNextID(MapID(0)); err != nil {
 		t.Fatal("Can't get next ID:", err)
@@ -1699,7 +1488,7 @@ func TestMapGetNextID(t *testing.T) {
 }
 
 func TestNewMapFromID(t *testing.T) {
-	hash := newHash(t)
+	hash := createMap(t, Hash, 10)
 
 	info, err := hash.Info()
 	testutils.SkipIfNotSupported(t, err)
@@ -1737,11 +1526,7 @@ func TestMapPinning(t *testing.T) {
 		Pinning:    PinByName,
 	}
 
-	m1, err := NewMapWithOptions(spec, MapOptions{PinPath: tmp})
-	if err != nil {
-		t.Fatal("Can't create map:", err)
-	}
-	defer m1.Close()
+	m1 := mustNewMap(t, spec, &MapOptions{PinPath: tmp})
 	pinned := m1.IsPinned()
 	qt.Assert(t, qt.IsTrue(pinned))
 
@@ -1752,12 +1537,7 @@ func TestMapPinning(t *testing.T) {
 		t.Fatal("Can't write value:", err)
 	}
 
-	m2, err := NewMapWithOptions(spec, MapOptions{PinPath: tmp})
-	testutils.SkipIfNotSupported(t, err)
-	if err != nil {
-		t.Fatal("Can't create map:", err)
-	}
-	defer m2.Close()
+	m2 := mustNewMap(t, spec, &MapOptions{PinPath: tmp})
 
 	m2Info, err := m2.Info()
 	qt.Assert(t, qt.IsNil(err))
@@ -1778,9 +1558,8 @@ func TestMapPinning(t *testing.T) {
 
 	spec.KeySize = 8
 	spec.ValueSize = 8
-	m3, err := NewMapWithOptions(spec, MapOptions{PinPath: tmp})
+	_, err = newMap(t, spec, &MapOptions{PinPath: tmp})
 	if err == nil {
-		m3.Close()
 		t.Fatalf("Opening a pinned map with a mismatching spec did not fail")
 	}
 	if !errors.Is(err, ErrMapIncompatible) {
@@ -1793,21 +1572,18 @@ func TestMapPinning(t *testing.T) {
 }
 
 func TestMapHandle(t *testing.T) {
-	testutils.SkipOnOldKernel(t, "4.18", "btf_id in map info")
-
 	kv := &btf.Int{Size: 4}
-	m, err := NewMap(&MapSpec{
+	m := mustNewMap(t, &MapSpec{
 		Type:       Hash,
 		KeySize:    kv.Size,
 		ValueSize:  kv.Size,
 		Key:        kv,
 		Value:      kv,
 		MaxEntries: 1,
-	})
-	qt.Assert(t, qt.IsNil(err))
-	defer m.Close()
+	}, nil)
 
 	h, err := m.Handle()
+	testutils.SkipIfNotSupported(t, err)
 	qt.Assert(t, qt.IsNil(err))
 	qt.Assert(t, qt.IsNotNil(h))
 	defer h.Close()
@@ -1825,14 +1601,43 @@ func TestPerfEventArrayCompatible(t *testing.T) {
 		Type: PerfEventArray,
 	}
 
-	m, err := NewMap(ms)
-	qt.Assert(t, qt.IsNil(err))
-	defer m.Close()
-
+	m := mustNewMap(t, ms, nil)
 	qt.Assert(t, qt.IsNil(ms.Compatible(m)))
 
 	ms.MaxEntries = m.MaxEntries() - 1
 	qt.Assert(t, qt.IsNotNil(ms.Compatible(m)))
+}
+
+func TestLoadWrongPin(t *testing.T) {
+	p := createBasicProgram(t)
+	m := createMap(t, Hash, 10)
+	tmp := testutils.TempBPFFS(t)
+
+	ppath := filepath.Join(tmp, "prog")
+	mpath := filepath.Join(tmp, "map")
+
+	qt.Assert(t, qt.IsNil(m.Pin(mpath)))
+	qt.Assert(t, qt.IsNil(p.Pin(ppath)))
+
+	t.Run("Program", func(t *testing.T) {
+		lp, err := LoadPinnedProgram(ppath, nil)
+		testutils.SkipIfNotSupported(t, err)
+		qt.Assert(t, qt.IsNil(err))
+		qt.Assert(t, qt.IsNil(lp.Close()))
+
+		_, err = LoadPinnedProgram(mpath, nil)
+		qt.Assert(t, qt.IsNotNil(err))
+	})
+
+	t.Run("Map", func(t *testing.T) {
+		lm, err := LoadPinnedMap(mpath, nil)
+		testutils.SkipIfNotSupported(t, err)
+		qt.Assert(t, qt.IsNil(err))
+		qt.Assert(t, qt.IsNil(lm.Close()))
+
+		_, err = LoadPinnedMap(ppath, nil)
+		qt.Assert(t, qt.IsNotNil(err))
+	})
 }
 
 type benchValue struct {
@@ -1876,16 +1681,12 @@ func (bk *benchKey) MarshalBinary() ([]byte, error) {
 
 func BenchmarkMarshaling(b *testing.B) {
 	newMap := func(valueSize uint32) *Map {
-		m, err := NewMap(&MapSpec{
+		return mustNewMap(b, &MapSpec{
 			Type:       Hash,
 			KeySize:    8,
 			ValueSize:  valueSize,
 			MaxEntries: 1,
-		})
-		if err != nil {
-			b.Fatal(err)
-		}
-		return m
+		}, nil)
 	}
 
 	key := uint64(0)
@@ -1975,17 +1776,13 @@ func BenchmarkPerCPUMarshalling(b *testing.B) {
 		val[i] = uint64(i)
 	}
 
-	m, err := NewMap(&MapSpec{
+	m := mustNewMap(b, &MapSpec{
 		Type:       PerCPUHash,
 		KeySize:    8,
 		ValueSize:  8,
 		MaxEntries: 1,
-	})
-	if err != nil {
-		b.Fatal(err)
-	}
+	}, nil)
 
-	b.Cleanup(func() { m.Close() })
 	if err := m.Put(key, val[0:]); err != nil {
 		b.Fatal(err)
 	}
@@ -2006,16 +1803,7 @@ func BenchmarkPerCPUMarshalling(b *testing.B) {
 }
 
 func BenchmarkMap(b *testing.B) {
-	m, err := NewMap(&MapSpec{
-		Type:       Hash,
-		KeySize:    4,
-		ValueSize:  4,
-		MaxEntries: 1,
-	})
-	if err != nil {
-		b.Fatal(err)
-	}
-	b.Cleanup(func() { m.Close() })
+	m := createMap(b, Hash, 1)
 
 	if err := m.Put(uint32(0), uint32(42)); err != nil {
 		b.Fatal(err)
@@ -2076,18 +1864,13 @@ func BenchmarkMap(b *testing.B) {
 
 func BenchmarkIterate(b *testing.B) {
 	for _, mt := range []MapType{Hash, PerCPUHash} {
-		m, err := NewMap(&MapSpec{
+		m := mustNewMap(b, &MapSpec{
 			Type:       mt,
 			KeySize:    8,
 			ValueSize:  8,
 			MaxEntries: 1000,
-		})
-		if err != nil {
-			b.Fatal(err)
-		}
-		b.Cleanup(func() {
-			m.Close()
-		})
+		}, nil)
+
 		possibleCPU := 1
 		if m.Type().hasPerCPUValue() {
 			possibleCPU = MustPossibleCPU()
@@ -2105,7 +1888,7 @@ func BenchmarkIterate(b *testing.B) {
 			}
 		}
 
-		_, err = m.BatchUpdate(keys, values, nil)
+		_, err := m.BatchUpdate(keys, values, nil)
 		testutils.SkipIfNotSupported(b, err)
 		qt.Assert(b, qt.IsNil(err))
 
@@ -2285,9 +2068,6 @@ func ExampleMap_perCPU() {
 	if err := entries.Err(); err != nil {
 		panic(err)
 	}
-	// Output:
-	// Value of key 0 on all CPUs: 4
-	// Value of key 1 on all CPUs: 5
 }
 
 // It is possible to use unsafe.Pointer to avoid marshalling
@@ -2321,7 +2101,6 @@ func ExampleMap_zeroCopy() {
 	}
 
 	fmt.Printf("The value is: %d\n", value)
-	// Output: The value is: 23
 }
 
 func ExampleMap_NextKey() {
@@ -2357,7 +2136,6 @@ func ExampleMap_NextKey() {
 	// Order of keys is non-deterministic due to randomized map seed
 	sort.Strings(keys)
 	fmt.Printf("Keys are %v\n", keys)
-	// Output: Keys are [hello world]
 }
 
 // ExampleMap_Iterate demonstrates how to iterate over all entries
@@ -2397,10 +2175,6 @@ func ExampleMap_Iterate() {
 	for k, v := range values {
 		fmt.Printf("key: %s, value: %d\n", k, v)
 	}
-
-	// Unordered output:
-	// key: hello, value: 21
-	// key: world, value: 42
 }
 
 // It is possible to iterate nested maps and program arrays by
@@ -2471,8 +2245,4 @@ func ExampleMap_Iterate_nestedMapsAndProgramArrays() {
 	if err := entries.Err(); err != nil {
 		panic(fmt.Sprint("Iterator encountered an error:", err))
 	}
-	// Output:
-	// outerKey: 0
-	//	innerKey 0 innerValue 1
-	// 	innerKey 1 innerValue 2
 }

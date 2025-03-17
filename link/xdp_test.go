@@ -1,7 +1,10 @@
 package link
 
 import (
+	"math"
 	"testing"
+
+	"github.com/go-quicktest/qt"
 
 	"github.com/khulnasoft/gbpf"
 	"github.com/khulnasoft/gbpf/internal/testutils"
@@ -14,13 +17,17 @@ func TestAttachXDP(t *testing.T) {
 
 	prog := mustLoadProgram(t, gbpf.XDP, 0, "")
 
+	_, err := AttachXDP(XDPOptions{
+		Program:   prog,
+		Interface: math.MaxInt,
+	})
+	qt.Assert(t, qt.IsNotNil(err))
+
 	l, err := AttachXDP(XDPOptions{
 		Program:   prog,
 		Interface: IfIndexLO,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	qt.Assert(t, qt.IsNil(err))
 
 	testLink(t, l, prog)
 }

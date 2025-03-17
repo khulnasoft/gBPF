@@ -99,28 +99,14 @@ type perfEventLink struct {
 
 func (pl *perfEventLink) isLink() {}
 
-// Pinning requires the underlying perf event FD to stay open.
-//
-// | PerfEvent FD | BpfLink FD | Works |
-// |--------------|------------|-------|
-// | Open         | Open       | Yes   |
-// | Closed       | Open       | No    |
-// | Open         | Closed     | No (Pin() -> EINVAL) |
-// | Closed       | Closed     | No (Pin() -> EINVAL) |
-//
-// There is currently no pretty way to recover the perf event FD
-// when loading a pinned link, so leave as not supported for now.
-func (pl *perfEventLink) Pin(string) error {
-	return fmt.Errorf("perf event link pin: %w", ErrNotSupported)
-}
-
-func (pl *perfEventLink) Unpin() error {
-	return fmt.Errorf("perf event link unpin: %w", ErrNotSupported)
-}
-
 func (pl *perfEventLink) Close() error {
 	if err := pl.fd.Close(); err != nil {
 		return fmt.Errorf("perf link close: %w", err)
+	}
+
+	// when created from pinned link
+	if pl.pe == nil {
+		return nil
 	}
 
 	if err := pl.pe.Close(); err != nil {
@@ -129,19 +115,24 @@ func (pl *perfEventLink) Close() error {
 	return nil
 }
 
-func (pl *perfEventLink) Update(prog *gbpf.Program) error {
+func (pl *perfEventLink) Update(_ *gbpf.Program) error {
 	return fmt.Errorf("perf event link update: %w", ErrNotSupported)
 }
 
 var _ PerfEvent = (*perfEventLink)(nil)
 
 func (pl *perfEventLink) PerfEvent() (*os.File, error) {
+	// when created from pinned link
+	if pl.pe == nil {
+		return nil, ErrNotSupported
+	}
+
 	fd, err := pl.pe.fd.Dup()
 	if err != nil {
 		return nil, err
 	}
 
-	return fd.File("perf-event"), nil
+	return fd.File("perf-event")
 }
 
 func (pl *perfEventLink) Info() (*Info, error) {
@@ -194,7 +185,7 @@ func (pi *perfEventIoctl) isLink() {}
 //
 // Detaching a program from a perf event is currently not possible, so a
 // program replacement mechanism cannot be implemented for perf events.
-func (pi *perfEventIoctl) Update(prog *gbpf.Program) error {
+func (pi *perfEventIoctl) Update(_ *gbpf.Program) error {
 	return fmt.Errorf("perf event ioctl update: %w", ErrNotSupported)
 }
 
@@ -218,7 +209,7 @@ func (pi *perfEventIoctl) PerfEvent() (*os.File, error) {
 		return nil, err
 	}
 
-	return fd.File("perf-event"), nil
+	return fd.File("perf-event")
 }
 
 // attach the given gBPF prog to the perf event stored in pe.
@@ -312,7 +303,7 @@ func openTracepointPerfEvent(tid uint64, pid int) (*sys.FD, error) {
 //
 // https://elixir.bootlin.com/linux/v5.16.8/source/kernel/bpf/syscall.c#L4307
 // https://github.com/torvalds/linux/commit/b89fbfbb854c9afc3047e8273cc3a694650b802e
-var havgBPFLinkPerfEvent = internal.NewFeatureTest("bpf_link_perf_event", "5.15", func() error {
+var havgBPFLinkPerfEvent = internal.NewFeatureTest("bpf_link_perf_event", func() error {
 	prog, err := gbpf.NewProgram(&gbpf.ProgramSpec{
 		Name: "probe_bpf_perf_link",
 		Type: gbpf.Kprobe,
@@ -338,4 +329,4 @@ var havgBPFLinkPerfEvent = internal.NewFeatureTest("bpf_link_perf_event", "5.15"
 		return nil
 	}
 	return err
-})
+}, "5.15")

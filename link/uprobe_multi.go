@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"unsafe"
 
 	"github.com/khulnasoft/gbpf"
 	"github.com/khulnasoft/gbpf/asm"
@@ -47,7 +46,7 @@ func (ex *Executable) UretprobeMulti(symbols []string, prog *gbpf.Program, opts 
 	// The return probe is not limited for symbols entry, so there's no special
 	// setup for return uprobes (other than the extra flag). The symbols, opts.Offsets
 	// and opts.Addresses arrays follow the same logic as for entry uprobes.
-	return ex.uprobeMulti(symbols, prog, opts, unix.BPF_F_UPROBE_MULTI_RETURN)
+	return ex.uprobeMulti(symbols, prog, opts, sys.BPF_F_UPROBE_MULTI_RETURN)
 }
 
 func (ex *Executable) uprobeMulti(symbols []string, prog *gbpf.Program, opts *UprobeMultiOptions, flags uint32) (Link, error) {
@@ -84,23 +83,26 @@ func (ex *Executable) uprobeMulti(symbols []string, prog *gbpf.Program, opts *Up
 		AttachType:       sys.BPF_TRACE_UPROBE_MULTI,
 		UprobeMultiFlags: flags,
 		Count:            uint32(addrs),
-		Offsets:          sys.NewPointer(unsafe.Pointer(&addresses[0])),
+		Offsets:          sys.SlicePointer(addresses),
 		Pid:              opts.PID,
 	}
 
 	if refCtrOffsets != 0 {
-		attr.RefCtrOffsets = sys.NewPointer(unsafe.Pointer(&opts.RefCtrOffsets[0]))
+		attr.RefCtrOffsets = sys.SlicePointer(opts.RefCtrOffsets)
 	}
 	if cookies != 0 {
-		attr.Cookies = sys.NewPointer(unsafe.Pointer(&opts.Cookies[0]))
+		attr.Cookies = sys.SlicePointer(opts.Cookies)
 	}
 
 	fd, err := sys.LinkCreateUprobeMulti(attr)
 	if errors.Is(err, unix.ESRCH) {
 		return nil, fmt.Errorf("%w (specified pid not found?)", os.ErrNotExist)
 	}
+	// Since Linux commit 46ba0e49b642 ("bpf: fix multi-uprobe PID filtering
+	// logic"), if the provided pid overflows MaxInt32 (turning it negative), the
+	// kernel will return EINVAL instead of ESRCH.
 	if errors.Is(err, unix.EINVAL) {
-		return nil, fmt.Errorf("%w (missing symbol or prog's AttachType not AttachTraceUprobeMulti?)", err)
+		return nil, fmt.Errorf("%w (invalid pid, missing symbol or prog's AttachType not AttachTraceUprobeMulti?)", err)
 	}
 
 	if err != nil {
@@ -168,19 +170,11 @@ type uprobeMultiLink struct {
 
 var _ Link = (*uprobeMultiLink)(nil)
 
-func (kml *uprobeMultiLink) Update(prog *gbpf.Program) error {
+func (kml *uprobeMultiLink) Update(_ *gbpf.Program) error {
 	return fmt.Errorf("update uprobe_multi: %w", ErrNotSupported)
 }
 
-func (kml *uprobeMultiLink) Pin(string) error {
-	return fmt.Errorf("pin uprobe_multi: %w", ErrNotSupported)
-}
-
-func (kml *uprobeMultiLink) Unpin() error {
-	return fmt.Errorf("unpin uprobe_multi: %w", ErrNotSupported)
-}
-
-var havgBPFLinkUprobeMulti = internal.NewFeatureTest("bpf_link_uprobe_multi", "6.6", func() error {
+var havgBPFLinkUprobeMulti = internal.NewFeatureTest("bpf_link_uprobe_multi", func() error {
 	prog, err := gbpf.NewProgram(&gbpf.ProgramSpec{
 		Name: "probe_upm_link",
 		Type: gbpf.Kprobe,
@@ -206,7 +200,7 @@ var havgBPFLinkUprobeMulti = internal.NewFeatureTest("bpf_link_uprobe_multi", "6
 		ProgFd:     uint32(prog.FD()),
 		AttachType: sys.BPF_TRACE_UPROBE_MULTI,
 		Path:       sys.NewStringPointer("/"),
-		Offsets:    sys.NewPointer(unsafe.Pointer(&[]uint64{0})),
+		Offsets:    sys.SlicePointer([]uint64{0}),
 		Count:      1,
 	})
 	switch {
@@ -221,4 +215,4 @@ var havgBPFLinkUprobeMulti = internal.NewFeatureTest("bpf_link_uprobe_multi", "6
 	// should not happen
 	fd.Close()
 	return errors.New("successfully attached uprobe_multi to /, kernel bug?")
-})
+}, "6.6")

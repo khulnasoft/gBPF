@@ -2,6 +2,8 @@ package testutils
 
 import (
 	"testing"
+
+	"github.com/go-quicktest/qt"
 )
 
 func TestIgnoreKernelVersionCheckWhenEnvVarIsSet(t *testing.T) {
@@ -44,11 +46,15 @@ func TestIgnoreKernelVersionCheckWhenEnvVarIsSet(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv(ignoreKernelVersionEnvVar, tt.toIgnoreNamesEnvValue)
+			t.Setenv(ignoreVersionEnvVar, tt.toIgnoreNamesEnvValue)
 
-			if got := ignoreKernelVersionCheck(tt.testName); got != tt.ignoreKernelVersionCheck {
+			if got := ignoreVersionCheck(tt.testName); got != tt.ignoreKernelVersionCheck {
 				t.Errorf("ignoreKernelVersionCheck() = %v, want %v", got, tt.ignoreKernelVersionCheck)
 			}
 		})
 	}
+}
+
+func TestPlatformVersion(t *testing.T) {
+	qt.Assert(t, qt.IsFalse(platformVersion(t).Unspecified()))
 }

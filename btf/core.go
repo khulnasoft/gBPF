@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/khulnasoft/gbpf/asm"
+	"github.com/khulnasoft/gbpf/internal"
+	"github.com/khulnasoft/gbpf/internal/platform"
 )
 
 // Code in this file is derived from libbpf, which is available under a BSD
@@ -46,6 +48,10 @@ func (f *COREFixup) String() string {
 }
 
 func (f *COREFixup) Apply(ins *asm.Instruction) error {
+	if !platform.IsLinux {
+		return fmt.Errorf("CO-RE fixup: %w", internal.ErrNotSupportedOnOS)
+	}
+
 	if f.poison {
 		// Relocation is poisoned, replace the instruction with an invalid one.
 		if ins.OpCode.IsDWordLoad() {

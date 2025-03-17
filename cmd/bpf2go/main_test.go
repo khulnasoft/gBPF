@@ -1,24 +1,28 @@
+//go:build !windows
+
 package main
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
-	"slices"
 	"strings"
 	"testing"
 
 	"github.com/go-quicktest/qt"
-	"github.com/google/go-cmp/cmp"
+
+	"github.com/khulnasoft/gbpf/cmd/bpf2go/gen"
+	"github.com/khulnasoft/gbpf/cmd/bpf2go/internal"
+	"github.com/khulnasoft/gbpf/internal/testutils"
 )
 
+const minimalSocketFilter = `__attribute__((section("socket"), used)) int main() { return 0; }`
+
 func TestRun(t *testing.T) {
-	clangBin := clangBin(t)
+	clangBin := testutils.ClangBin(t)
 	dir := t.TempDir()
 	mustWriteFile(t, dir, "test.c", minimalSocketFilter)
 
@@ -43,7 +47,7 @@ func TestRun(t *testing.T) {
 		}
 	}
 
-	module := currentModule()
+	module := internal.CurrentModule
 
 	execInModule("go", "mod", "init", "bpf2go-test")
 
@@ -128,7 +132,7 @@ func TestDisableStripping(t *testing.T) {
 	err := run(io.Discard, []string{
 		"-go-package", "foo",
 		"-output-dir", dir,
-		"-cc", clangBin(t),
+		"-cc", testutils.ClangBin(t),
 		"-strip", "binary-that-certainly-doesnt-exist",
 		"-no-strip",
 		"bar",
@@ -137,106 +141,6 @@ func TestDisableStripping(t *testing.T) {
 
 	if err != nil {
 		t.Fatal("Can't run with stripping disabled:", err)
-	}
-}
-
-func TestCollectTargets(t *testing.T) {
-	clangArches := make(map[string][]goarch)
-	linuxArchesLE := make(map[string][]goarch)
-	linuxArchesBE := make(map[string][]goarch)
-	for arch, archTarget := range targetByGoArch {
-		clangArches[archTarget.clang] = append(clangArches[archTarget.clang], arch)
-		if archTarget.clang == "bpfel" {
-			linuxArchesLE[archTarget.linux] = append(linuxArchesLE[archTarget.linux], arch)
-			continue
-		}
-		linuxArchesBE[archTarget.linux] = append(linuxArchesBE[archTarget.linux], arch)
-	}
-	for i := range clangArches {
-		slices.Sort(clangArches[i])
-	}
-	for i := range linuxArchesLE {
-		slices.Sort(linuxArchesLE[i])
-	}
-	for i := range linuxArchesBE {
-		slices.Sort(linuxArchesBE[i])
-	}
-
-	nativeTarget := make(map[target][]goarch)
-	for arch, archTarget := range targetByGoArch {
-		if arch == goarch(runtime.GOARCH) {
-			if archTarget.clang == "bpfel" {
-				nativeTarget[archTarget] = linuxArchesLE[archTarget.linux]
-			} else {
-				nativeTarget[archTarget] = linuxArchesBE[archTarget.linux]
-			}
-			break
-		}
-	}
-
-	tests := []struct {
-		targets []string
-		want    map[target][]goarch
-	}{
-		{
-			[]string{"bpf", "bpfel", "bpfeb"},
-			map[target][]goarch{
-				{"bpf", ""}:   nil,
-				{"bpfel", ""}: clangArches["bpfel"],
-				{"bpfeb", ""}: clangArches["bpfeb"],
-			},
-		},
-		{
-			[]string{"amd64", "386"},
-			map[target][]goarch{
-				{"bpfel", "x86"}: linuxArchesLE["x86"],
-			},
-		},
-		{
-			[]string{"amd64", "ppc64"},
-			map[target][]goarch{
-				{"bpfeb", "powerpc"}: linuxArchesBE["powerpc"],
-				{"bpfel", "x86"}:     linuxArchesLE["x86"],
-			},
-		},
-		{
-			[]string{"native"},
-			nativeTarget,
-		},
-	}
-
-	for _, test := range tests {
-		name := strings.Join(test.targets, ",")
-		t.Run(name, func(t *testing.T) {
-			have, err := collectTargets(test.targets)
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			if diff := cmp.Diff(test.want, have); diff != "" {
-				t.Errorf("Result mismatch (-want +got):\n%s", diff)
-			}
-		})
-	}
-}
-
-func TestCollectTargetsErrors(t *testing.T) {
-	tests := []struct {
-		name   string
-		target string
-	}{
-		{"unknown", "frood"},
-		{"no linux target", "mipsle"},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			_, err := collectTargets([]string{test.target})
-			if err == nil {
-				t.Fatal("Function did not return an error")
-			}
-			t.Log("Error message:", err)
-		})
 	}
 }
 
@@ -253,13 +157,13 @@ func TestConvertGOARCH(t *testing.T) {
 		pkg:              "test",
 		stdout:           io.Discard,
 		identStem:        "test",
-		cc:               clangBin(t),
+		cc:               testutils.ClangBin(t),
 		disableStripping: true,
 		sourceFile:       tmp + "/test.c",
 		outputDir:        tmp,
 	}
 
-	if err := b2g.convert(targetByGoArch["amd64"], nil); err != nil {
+	if err := b2g.convert(gen.TargetsByGoArch()["amd64"], nil); err != nil {
 		t.Fatal("Can't target GOARCH:", err)
 	}
 }
@@ -476,70 +380,36 @@ func TestParseArgs(t *testing.T) {
 		qt.Assert(t, qt.IsNil(err))
 		qt.Assert(t, qt.Equals(b2g.outputDir, outputDir))
 	})
+
+	t.Run("output suffix default", func(t *testing.T) {
+		t.Setenv(gopackageEnv, pkg)
+		b2g, err := newB2G(&bytes.Buffer{}, []string{stem, csource})
+		qt.Assert(t, qt.IsNil(err))
+		qt.Assert(t, qt.Equals(b2g.outputSuffix, ""))
+	})
+
+	t.Run("output suffix GOFILE=_test", func(t *testing.T) {
+		t.Setenv(gopackageEnv, pkg)
+		t.Setenv("GOFILE", "foo_test.go")
+		b2g, err := newB2G(&bytes.Buffer{}, []string{stem, csource})
+		qt.Assert(t, qt.IsNil(err))
+		qt.Assert(t, qt.Equals(b2g.outputSuffix, "_test"))
+	})
+
+	t.Run("output suffix custom", func(t *testing.T) {
+		t.Setenv(gopackageEnv, pkg)
+		t.Setenv("GOFILE", "foo_test.go")
+		args := []string{"-output-suffix", "_custom", stem, csource}
+		b2g, err := newB2G(&bytes.Buffer{}, args)
+		qt.Assert(t, qt.IsNil(err))
+		qt.Assert(t, qt.Equals(b2g.outputSuffix, "_custom"))
+	})
 }
 
-func TestGoarches(t *testing.T) {
-	exe := goBin(t)
-
-	for goarch := range targetByGoArch {
-		t.Run(string(goarch), func(t *testing.T) {
-			goEnv := exec.Command(exe, "env")
-			goEnv.Env = []string{"GOROOT=/", "GOOS=linux", "GOARCH=" + string(goarch)}
-			output, err := goEnv.CombinedOutput()
-			qt.Assert(t, qt.IsNil(err), qt.Commentf("go output is:\n%s", string(output)))
-		})
+func mustWriteFile(tb testing.TB, dir, name, contents string) {
+	tb.Helper()
+	tmpFile := filepath.Join(dir, name)
+	if err := os.WriteFile(tmpFile, []byte(contents), 0660); err != nil {
+		tb.Fatal(err)
 	}
-}
-
-func TestClangTargets(t *testing.T) {
-	exe := goBin(t)
-
-	clangTargets := map[string]struct{}{}
-	for _, tgt := range targetByGoArch {
-		clangTargets[tgt.clang] = struct{}{}
-	}
-
-	for target := range clangTargets {
-		for _, env := range []string{"GOOS", "GOARCH"} {
-			env += "=" + target
-			t.Run(env, func(t *testing.T) {
-				goEnv := exec.Command(exe, "env")
-				goEnv.Env = []string{"GOROOT=/", env}
-				output, err := goEnv.CombinedOutput()
-				t.Log("go output is:", string(output))
-				qt.Assert(t, qt.IsNotNil(err), qt.Commentf("No clang target should be a valid build constraint"))
-			})
-		}
-
-	}
-}
-
-func clangBin(t *testing.T) string {
-	t.Helper()
-
-	if testing.Short() {
-		t.Skip("Not compiling with -short")
-	}
-
-	// Use a floating clang version for local development, but allow CI to run
-	// against oldest supported clang.
-	clang := "clang"
-	if minVersion := os.Getenv("CI_MIN_CLANG_VERSION"); minVersion != "" {
-		clang = fmt.Sprintf("clang-%s", minVersion)
-	}
-
-	t.Log("Testing against", clang)
-	return clang
-}
-
-func goBin(t *testing.T) string {
-	t.Helper()
-
-	exe, err := exec.LookPath("go")
-	if errors.Is(err, exec.ErrNotFound) {
-		t.Skip("go binary is not in PATH")
-	}
-	qt.Assert(t, qt.IsNil(err))
-
-	return exe
 }

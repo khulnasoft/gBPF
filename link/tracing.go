@@ -14,7 +14,7 @@ type tracing struct {
 	RawLink
 }
 
-func (f *tracing) Update(new *gbpf.Program) error {
+func (f *tracing) Update(_ *gbpf.Program) error {
 	return fmt.Errorf("tracing update: %w", ErrNotSupported)
 }
 

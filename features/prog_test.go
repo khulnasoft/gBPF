@@ -10,11 +10,11 @@ import (
 	"github.com/khulnasoft/gbpf/asm"
 	"github.com/khulnasoft/gbpf/internal"
 	"github.com/khulnasoft/gbpf/internal/testutils"
-	"github.com/khulnasoft/gbpf/internal/testutils/fdtrace"
+	"github.com/khulnasoft/gbpf/internal/testutils/testmain"
 )
 
 func TestMain(m *testing.M) {
-	fdtrace.TestMain(m)
+	testmain.Run(m)
 }
 
 func TestHaveProgramType(t *testing.T) {
@@ -72,6 +72,7 @@ func TestHaveProgramHelper(t *testing.T) {
 			testutils.SkipOnOldKernel(t, tc.version, feature)
 
 			err := HaveProgramHelper(tc.prog, tc.helper)
+			testutils.SkipIfNotSupportedOnOS(t, err)
 			if !errors.Is(err, tc.expected) {
 				t.Fatalf("%s/%s: %v", tc.prog.String(), tc.helper.String(), err)
 			}

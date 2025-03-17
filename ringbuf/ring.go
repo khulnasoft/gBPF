@@ -1,3 +1,5 @@
+//go:build linux
+
 package ringbuf
 
 import (
@@ -9,6 +11,7 @@ import (
 	"unsafe"
 
 	"github.com/khulnasoft/gbpf/internal"
+	"github.com/khulnasoft/gbpf/internal/sys"
 	"github.com/khulnasoft/gbpf/internal/unix"
 )
 
@@ -70,15 +73,18 @@ func newRingReader(cons_ptr, prod_ptr *uint64, ring []byte) *ringReader {
 	}
 }
 
-func (rr *ringReader) isEmpty() bool {
-	cons := atomic.LoadUint64(rr.cons_pos)
-	prod := atomic.LoadUint64(rr.prod_pos)
-
-	return prod == cons
+// To be able to wrap around data, data pages in ring buffers are mapped twice in
+// a single contiguous virtual region.
+// Therefore the returned usable size is half the size of the mmaped region.
+func (rr *ringReader) size() int {
+	return cap(rr.ring) / 2
 }
 
-func (rr *ringReader) size() int {
-	return cap(rr.ring)
+// The amount of data available to read in the ring buffer.
+func (rr *ringReader) AvailableBytes() uint64 {
+	prod := atomic.LoadUint64(rr.prod_pos)
+	cons := atomic.LoadUint64(rr.cons_pos)
+	return prod - cons
 }
 
 // Read a record from an event ring.
@@ -89,7 +95,7 @@ func (rr *ringReader) readRecord(rec *Record) error {
 	for {
 		if remaining := prod - cons; remaining == 0 {
 			return errEOR
-		} else if remaining < unix.BPF_RINGBUF_HDR_SZ {
+		} else if remaining < sys.BPF_RINGBUF_HDR_SZ {
 			return fmt.Errorf("read record header: %w", io.ErrUnexpectedEOF)
 		}
 
@@ -108,7 +114,7 @@ func (rr *ringReader) readRecord(rec *Record) error {
 			return errBusy
 		}
 
-		cons += unix.BPF_RINGBUF_HDR_SZ
+		cons += sys.BPF_RINGBUF_HDR_SZ
 
 		// Data is always padded to 8 byte alignment.
 		dataLenAligned := uint64(internal.Align(header.dataLen(), 8))

@@ -1,8 +1,9 @@
+//go:build linux
+
 // This program demonstrates attaching an gBPF program to a network interface
-// with Linux TC (Traffic Control). The program counts ingress and egress
-// packets using two ARRAY maps.
-// The userspace program (Go code in this file) prints the contents
-// of the two maps to stdout every second.
+// with Linux TCX (Traffic Control with gBPF). The program counts ingress and egress
+// packets using two variables. The userspace program (Go code in this file)
+// prints the contents of the two variables to stdout every second.
 // This example depends on tcx bpf_link, available in Linux kernel version 6.6 or newer.
 package main
 
@@ -17,7 +18,7 @@ import (
 	"github.com/khulnasoft/gbpf/link"
 )
 
-//go:generate go run github.com/khulnasoft/gbpf/cmd/bpf2go bpf tcx.c -- -I../headers
+//go:generate go run github.com/khulnasoft/gbpf/cmd/bpf2go -tags linux bpf tcx.c -- -I../headers
 func main() {
 	if len(os.Args) < 2 {
 		log.Fatalf("Please specify a network interface")
@@ -78,20 +79,19 @@ func main() {
 	}
 }
 
-func formatCounters(ingressMap, egressMap *gbpf.Map) (string, error) {
+func formatCounters(ingressVar, egressVar *gbpf.Variable) (string, error) {
 	var (
 		ingressPacketCount uint64
 		egressPacketCount  uint64
-		key                int32
 	)
 
 	// retrieve value from the ingress map
-	if err := ingressMap.Lookup(&key, &ingressPacketCount); err != nil {
+	if err := ingressVar.Get(&ingressPacketCount); err != nil {
 		return "", err
 	}
 
 	// retrieve value from the egress map
-	if err := egressMap.Lookup(&key, &egressPacketCount); err != nil {
+	if err := egressVar.Get(&egressPacketCount); err != nil {
 		return "", err
 	}
 
